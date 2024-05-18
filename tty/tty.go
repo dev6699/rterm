@@ -16,12 +16,12 @@ type TTY struct {
 	writable   bool
 }
 
-func New(controller Controller, agent Agent) *TTY {
+func New(controller Controller, agent Agent, writable bool) *TTY {
 	return &TTY{
 		controller: controller,
 		agent:      agent,
 		bufferSize: 1024,
-		writable:   true,
+		writable:   writable,
 	}
 }
 

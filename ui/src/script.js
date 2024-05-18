@@ -13,7 +13,7 @@ fitAddon.fit();
 const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
 const wsHost = window.location.hostname;
 const wsPort = window.location.port ? ':' + window.location.port : '';
-const wsPath = '/ws';
+const wsPath = window.location.pathname + '/ws';
 const wsURL = wsProtocol + wsHost + wsPort + wsPath;
 const socket = new WebSocket(wsURL);
 

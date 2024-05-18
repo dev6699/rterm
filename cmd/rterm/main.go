@@ -2,10 +2,12 @@ package main
 
 import (
 	"log"
+	"net/http"
+	_ "net/http/pprof"
+	"strings"
 
+	"github.com/dev6699/rterm"
 	"github.com/dev6699/rterm/command"
-	"github.com/dev6699/rterm/server"
-	"github.com/dev6699/rterm/ui"
 )
 
 func main() {
@@ -16,24 +18,43 @@ func main() {
 }
 
 func run() error {
-	assets, err := ui.Assets()
-	if err != nil {
-		return err
-	}
+	rterm.SetPrefix("/")
+	mux := http.NewServeMux()
 
-	srv, err := server.New(
-		assets,
-		func() (*command.Command, error) {
-			return command.New("bash", nil)
+	rterm.Register(
+		mux,
+		rterm.Command{
+			Factory: func() (*command.Command, error) {
+				return command.New("bash", nil)
+			},
+			Name:        "bash",
+			Description: "Bash (Unix shell)",
+			Writable:    true,
+		},
+		rterm.Command{
+			Factory: func() (*command.Command, error) {
+				return command.New("htop", nil)
+			},
+			Name:        "htop",
+			Description: "Interactive system monitor process viewer and process manager",
+			Writable:    false,
+		},
+		rterm.Command{
+			Factory: func() (*command.Command, error) {
+				return command.New("nvidia-smi", strings.Split("--query-gpu=utilization.gpu --format=csv -l 1", " "))
+			},
+			Name:        "nvidia-smi",
+			Description: "Monitors and outputs the GPU utilization percentage every second",
+			Writable:    false,
 		},
 	)
-	if err != nil {
-		return err
-	}
 
 	addr := ":5000"
+	server := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
 	log.Println("⚠️ CAUTION USE AT YOUR OWN RISK!!! ⚠️")
 	log.Printf("Server listening on http://0.0.0.0%s", addr)
-
-	return srv.Run(addr)
+	return server.ListenAndServe()
 }
