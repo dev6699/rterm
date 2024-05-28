@@ -1,3 +1,7 @@
+# Release 0.4.0
+## Major Features and Improvements
+* Add support for go version < 1.22
+
 # Release 0.3.0
 ## Breaking Changes
 * `Command.Factory` has been removed in favor of new `Command.Args`
