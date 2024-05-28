@@ -66,12 +66,18 @@ socket.addEventListener("message", (event) => {
 });
 
 socket.addEventListener("close", () => {
-    terminal.dispose()
+    if (terminal) {
+        terminal.dispose()
+    }
+    terminalElement.style.display = 'block'
     terminalElement.innerText = "Connection closed"
 })
 
 socket.addEventListener("error", () => {
-    terminal.dispose()
+    if (terminal) {
+        terminal.dispose()
+    }
+    terminalElement.style.display = 'block'
     terminalElement.innerText = "Connection error"
 })
 
