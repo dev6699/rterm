@@ -15,7 +15,7 @@ Inspired by [GoTTY](https://github.com/yudai/gotty)
 
 ## Installation
 
-1. Import as package to exisitng project.
+1. Import as package to existing project.
     ```bash
     go get github.com/dev6699/rterm
     ```

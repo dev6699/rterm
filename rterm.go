@@ -90,38 +90,60 @@ func Register(mux *http.ServeMux, commands ...Command) {
 		return commands[i].Name < commands[j].Name
 	})
 
-	baseURL := "GET " + defaultPrefix
-	if baseURL == "GET " {
-		baseURL = "GET /"
-	}
-	mux.HandleFunc(baseURL, index)
-	mux.Handle("GET "+defaultPrefix+"/{command}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ext := filepath.Ext(r.URL.String())
-		stripPrefix := r.URL.String()
-		if ext != "" {
-			stripPrefix = defaultPrefix
-		}
-		http.StripPrefix(stripPrefix, http.FileServer(http.FS(assets))).ServeHTTP(w, r)
-	}))
-	mux.HandleFunc("GET "+defaultPrefix+"/{command}/ws", func(w http.ResponseWriter, r *http.Request) {
-		c := r.PathValue("command")
-		cmd, ok := commandsMap[c]
-		if !ok {
-			http.NotFound(w, r)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == defaultPrefix {
+			if r.Method == http.MethodGet {
+				index(w, r)
+				return
+			}
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		server.HandleWebSocket(&wsUpgrader, server.Command{
-			Factory: func() (tty.Agent, error) {
-				return command.New(cmd.Name, cmd.Args)
-			},
-			Writable:  cmd.Writable,
-			AuthCheck: cmd.AuthCheck,
-		})(w, r)
+
+		if strings.HasPrefix(r.URL.Path, defaultPrefix+"/") {
+
+			commandPath := strings.TrimPrefix(r.URL.Path, defaultPrefix+"/")
+
+			if strings.HasSuffix(commandPath, "/ws") {
+				if r.Method == http.MethodGet {
+					c := strings.TrimSuffix(commandPath, "/ws")
+					cmd, ok := commandsMap[c]
+					if !ok {
+						http.NotFound(w, r)
+						return
+					}
+					server.HandleWebSocket(&wsUpgrader, server.Command{
+						Factory: func() (tty.Agent, error) {
+							return command.New(cmd.Name, cmd.Args)
+						},
+						Writable:  cmd.Writable,
+						AuthCheck: cmd.AuthCheck,
+					})(w, r)
+					return
+				}
+				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+				return
+			}
+
+			if r.Method == http.MethodGet {
+				ext := filepath.Ext(r.URL.String())
+				stripPrefix := r.URL.String()
+				if ext != "" {
+					stripPrefix = defaultPrefix
+				}
+				http.StripPrefix(stripPrefix, http.FileServer(http.FS(assets))).ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		http.NotFound(w, r)
 	})
 }
 
 // index responds with an HTML page listing the available commands.
-func index(w http.ResponseWriter, r *http.Request) {
+func index(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
