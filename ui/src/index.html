@@ -18,7 +18,8 @@
             height: 100vh;
         }
 
-        #terminal {
+        #terminal,
+        #auth {
             color: white;
             background: black;
             height: 100%;
@@ -27,10 +28,53 @@
         .xterm-viewport {
             overflow-y: auto !important;
         }
+
+        #auth {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .digit-input {
+            width: 30px;
+            height: 40px;
+            font-size: 1.5em;
+            text-align: center;
+            margin: 5px;
+        }
+
+        input::-webkit-outer-spin-button,
+        input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        #result {
+            color: red;
+        }
     </style>
 </head>
 
 <body>
+    <div id="auth">
+        <h1>Enter 6-Digit Code</h1>
+        <div>
+            <input type="number" id="digit1" class="digit-input" maxlength="1" oninput="moveFocus(1)"
+                autocomplete="off">
+            <input type="number" id="digit2" class="digit-input" maxlength="1" oninput="moveFocus(2)"
+                autocomplete="off">
+            <input type="number" id="digit3" class="digit-input" maxlength="1" oninput="moveFocus(3)"
+                autocomplete="off">
+            <input type="number" id="digit4" class="digit-input" maxlength="1" oninput="moveFocus(4)"
+                autocomplete="off">
+            <input type="number" id="digit5" class="digit-input" maxlength="1" oninput="moveFocus(5)"
+                autocomplete="off">
+            <input type="number" id="digit6" class="digit-input" maxlength="1" oninput="moveFocus(6)"
+                autocomplete="off">
+        </div>
+        <div id="result"></div>
+    </div>
     <div id="terminal"></div>
     <script src="script.js"></script>
 </body>

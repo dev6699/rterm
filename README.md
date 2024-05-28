@@ -9,7 +9,7 @@ RTERM is a web-based remote control application that allows you to control your 
 Inspired by [GoTTY](https://github.com/yudai/gotty)
 
 <p align="center">
-    <img src="rterm.gif">
+    <img src="docs/rterm.gif">
 </p>
 
 
@@ -33,12 +33,10 @@ Inspired by [GoTTY](https://github.com/yudai/gotty)
         rterm.Register(
             mux,
             rterm.Command{
-                Factory: func() (*command.Command, error) {
-                    return command.New("bash", nil)
-                },
                 Name:        "bash",
                 Description: "Bash (Unix shell)",
                 Writable:    true,
+                AuthCheck:   auth.NewBasic("123456"),
             },
         )
 
@@ -51,7 +49,9 @@ Inspired by [GoTTY](https://github.com/yudai/gotty)
     }
     ```
     Please check [example](cmd/rterm/main.go) for more information.
-    <img src="screenshot.png">
+
+    <img src="docs/index.png" width="45%">
+    <img src="docs/auth.png" width="45%">
 
 2. Prebuilt binary.
 

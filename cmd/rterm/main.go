@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/dev6699/rterm"
-	"github.com/dev6699/rterm/command"
+	"github.com/dev6699/rterm/auth"
 )
 
 func main() {
@@ -24,28 +24,25 @@ func run() error {
 	rterm.Register(
 		mux,
 		rterm.Command{
-			Factory: func() (*command.Command, error) {
-				return command.New("bash", nil)
-			},
 			Name:        "bash",
 			Description: "Bash (Unix shell)",
 			Writable:    true,
+			AuthCheck:   auth.NewTOTP("F4ECH5IH72ECOFFN4INKHXA5AVKTS256"),
 		},
 		rterm.Command{
-			Factory: func() (*command.Command, error) {
-				return command.New("htop", nil)
-			},
+			Name:        "sh",
+			Description: "Shell",
+			Writable:    true,
+			AuthCheck:   auth.NewBasic("123456"),
+		},
+		rterm.Command{
 			Name:        "htop",
 			Description: "Interactive system monitor process viewer and process manager",
-			Writable:    false,
 		},
 		rterm.Command{
-			Factory: func() (*command.Command, error) {
-				return command.New("nvidia-smi", strings.Split("--query-gpu=utilization.gpu --format=csv -l 1", " "))
-			},
 			Name:        "nvidia-smi",
+			Args:        strings.Split("--query-gpu=utilization.gpu --format=csv -l 1", " "),
 			Description: "Monitors and outputs the GPU utilization percentage every second",
-			Writable:    false,
 		},
 	)
 

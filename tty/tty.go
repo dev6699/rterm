@@ -6,23 +6,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/dev6699/rterm/auth"
 )
 
+type AgentFactory = func() (Agent, error)
+
 type TTY struct {
-	controller Controller
-	agent      Agent
+	controller   Controller
+	agentFactory AgentFactory
+	// agent will be nil unless authCheck has passed
+	agent Agent
+
+	// mutex to ensure no concurrent write to controller
 	mut        sync.Mutex
 	bufferSize int
 	writable   bool
+	authCheck  auth.AuthCheck
 }
 
-func New(controller Controller, agent Agent, writable bool) *TTY {
+func New(controller Controller, agentFactory AgentFactory) *TTY {
 	return &TTY{
-		controller: controller,
-		agent:      agent,
-		bufferSize: 1024,
-		writable:   writable,
+		controller:   controller,
+		agentFactory: agentFactory,
+		bufferSize:   1024,
 	}
+}
+
+func (t *TTY) WithWrite(b bool) {
+	t.writable = b
+}
+
+func (t *TTY) WithAuthCheck(c auth.AuthCheck) {
+	t.authCheck = c
 }
 
 func (t *TTY) Run(ctx context.Context) error {
@@ -36,6 +52,10 @@ func (t *TTY) Run(ctx context.Context) error {
 	go func() {
 		buf := make([]byte, t.bufferSize)
 		for {
+			if t.agent == nil {
+				continue
+			}
+
 			n, err := t.agent.Read(buf)
 			if err != nil {
 				errCh <- err
@@ -78,6 +98,28 @@ func (t *TTY) Run(ctx context.Context) error {
 }
 
 func (t *TTY) initialize() error {
+	if t.authCheck != nil {
+		return t.controllerWrite(Auth, nil)
+	}
+
+	err := t.createAgent()
+	if err != nil {
+		return err
+	}
+	return t.controllerWrite(AuthOK, nil)
+}
+
+func (t *TTY) createAgent() error {
+	if t.agent != nil {
+		return nil
+	}
+
+	var err error
+	t.agent, err = t.agentFactory()
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -93,6 +135,25 @@ func (t *TTY) handleControllerData(data []byte) error {
 
 	msg := Message(data[0])
 	switch msg {
+
+	case AuthTry:
+		code := data[1:]
+		pass, err := t.authCheck.Verify(string(code))
+		if err != nil {
+			return err
+		}
+
+		if pass {
+			var err error
+			t.agent, err = t.agentFactory()
+			if err != nil {
+				return err
+			}
+			t.controllerWrite(AuthOK, nil)
+		} else {
+			t.controllerWrite(AuthFailed, nil)
+		}
+
 	case Input:
 		if !t.writable || len(data) <= 1 {
 			return nil
@@ -118,7 +179,7 @@ func (t *TTY) handleControllerData(data []byte) error {
 		return t.agent.ResizeTerminal(r.Cols, r.Rows)
 
 	default:
-		return fmt.Errorf("tty: unkown message type: %c", msg)
+		return fmt.Errorf("tty: unknown message type: %c", msg)
 	}
 
 	return nil
