@@ -4,14 +4,18 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/dev6699/rterm/command"
+	"github.com/dev6699/rterm/auth"
 	"github.com/dev6699/rterm/tty"
 	"github.com/gorilla/websocket"
 )
 
-type CommandFactory = func() (*command.Command, error)
+type Command struct {
+	Factory   tty.AgentFactory
+	AuthCheck auth.AuthCheck
+	Writable  bool
+}
 
-func HandleWebSocket(wsUpgrader *websocket.Upgrader, cmdFac CommandFactory, writable bool) func(http.ResponseWriter, *http.Request) {
+func HandleWebSocket(wsUpgrader *websocket.Upgrader, cmd Command) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		conn, err := wsUpgrader.Upgrade(w, r, nil)
@@ -21,13 +25,10 @@ func HandleWebSocket(wsUpgrader *websocket.Upgrader, cmdFac CommandFactory, writ
 		}
 		defer conn.Close()
 
-		cmd, err := cmdFac()
-		if err != nil {
-			log.Printf("server: failed to start command; err = %v", err)
-			return
-		}
+		t := tty.New(WSController{Conn: conn}, cmd.Factory)
+		t.WithWrite(cmd.Writable)
+		t.WithAuthCheck(cmd.AuthCheck)
 
-		t := tty.New(WSController{Conn: conn}, cmd, writable)
 		err = t.Run(r.Context())
 		if err != nil {
 			log.Printf("server: socket connection closed; err = %v", err)

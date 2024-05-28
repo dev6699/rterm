@@ -13,7 +13,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dev6699/rterm/auth"
+	"github.com/dev6699/rterm/command"
 	"github.com/dev6699/rterm/server"
+	"github.com/dev6699/rterm/tty"
 	"github.com/dev6699/rterm/ui"
 	"github.com/gorilla/websocket"
 )
@@ -48,9 +51,7 @@ func SetPrefix(prefix string) {
 	}
 
 	// Check if the prefix ends with "/"
-	if strings.HasSuffix(prefix, "/") {
-		prefix = strings.TrimSuffix(prefix, "/")
-	}
+	prefix = strings.TrimSuffix(prefix, "/")
 
 	defaultPrefix = prefix
 }
@@ -61,13 +62,16 @@ func SetWSUpgrader(u websocket.Upgrader) {
 }
 
 type Command struct {
-	Factory server.CommandFactory
 	// Name of the command, will be used as the url to execute the command
 	Name string
+	// Args of the the command
+	Args []string
 	// Description of the command
 	Description string
-	// Writable indicate whether server should process inputs from clients.
+	// Writable indicate whether server should process inputs from clients
 	Writable bool
+	// AuthCheck acts as pre-verification step before starts agent process
+	AuthCheck auth.AuthCheck
 }
 
 // Register binds all command handlers to the http mux.
@@ -106,7 +110,13 @@ func Register(mux *http.ServeMux, commands ...Command) {
 			http.NotFound(w, r)
 			return
 		}
-		server.HandleWebSocket(&wsUpgrader, cmd.Factory, cmd.Writable)(w, r)
+		server.HandleWebSocket(&wsUpgrader, server.Command{
+			Factory: func() (tty.Agent, error) {
+				return command.New(cmd.Name, cmd.Args)
+			},
+			Writable:  cmd.Writable,
+			AuthCheck: cmd.AuthCheck,
+		})(w, r)
 	})
 }
 
