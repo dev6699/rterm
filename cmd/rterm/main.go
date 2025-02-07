@@ -8,6 +8,7 @@ import (
 
 	"github.com/dev6699/rterm"
 	"github.com/dev6699/rterm/auth"
+	"github.com/gorilla/websocket"
 )
 
 func main() {
@@ -18,6 +19,13 @@ func main() {
 }
 
 func run() error {
+	rterm.SetWSUpgrader(websocket.Upgrader{
+		ReadBufferSize:  1024 * 10e3,
+		WriteBufferSize: 1024 * 10e3,
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	})
 	rterm.SetPrefix("/")
 	mux := http.NewServeMux()
 
