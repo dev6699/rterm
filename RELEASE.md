@@ -1,3 +1,7 @@
+# Release 0.5.0
+## Major Features and Improvements
+* Allow buffer size to be configurable.
+
 # Release 0.4.0
 ## Major Features and Improvements
 * Add support for go version < 1.22
