@@ -25,7 +25,7 @@ func HandleWebSocket(wsUpgrader *websocket.Upgrader, cmd Command) func(http.Resp
 		}
 		defer conn.Close()
 
-		t := tty.New(WSController{Conn: conn}, cmd.Factory)
+		t := tty.New(WSController{Conn: conn}, cmd.Factory, wsUpgrader.ReadBufferSize, wsUpgrader.WriteBufferSize)
 		t.WithWrite(cmd.Writable)
 		t.WithAuthCheck(cmd.AuthCheck)
 

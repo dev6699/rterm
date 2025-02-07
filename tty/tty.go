@@ -19,17 +19,19 @@ type TTY struct {
 	agent Agent
 
 	// mutex to ensure no concurrent write to controller
-	mut        sync.Mutex
-	bufferSize int
-	writable   bool
-	authCheck  auth.AuthCheck
+	mut                  sync.Mutex
+	agentBufferSize      int
+	controllerBufferSize int
+	writable             bool
+	authCheck            auth.AuthCheck
 }
 
-func New(controller Controller, agentFactory AgentFactory) *TTY {
+func New(controller Controller, agentFactory AgentFactory, agentBufferSize int, controllerBufferSize int) *TTY {
 	return &TTY{
-		controller:   controller,
-		agentFactory: agentFactory,
-		bufferSize:   1024,
+		controller:           controller,
+		agentFactory:         agentFactory,
+		agentBufferSize:      agentBufferSize,
+		controllerBufferSize: controllerBufferSize,
 	}
 }
 
@@ -50,7 +52,7 @@ func (t *TTY) Run(ctx context.Context) error {
 	errCh := make(chan error, 2)
 
 	go func() {
-		buf := make([]byte, t.bufferSize)
+		buf := make([]byte, t.agentBufferSize)
 		for {
 			if t.agent == nil {
 				continue
@@ -71,7 +73,7 @@ func (t *TTY) Run(ctx context.Context) error {
 	}()
 
 	go func() {
-		buf := make([]byte, t.bufferSize)
+		buf := make([]byte, t.controllerBufferSize)
 		for {
 			n, err := t.controller.Read(buf)
 			if err != nil {
