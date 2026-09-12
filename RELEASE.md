@@ -1,3 +1,9 @@
+# Release 0.6.0
+## Major Features and Improvements
+* Add embedded terminal and parent bridge support.
+* Add command-level embedding permissions and trailing-slash route handling.
+* Improve TTY agent synchronization for concurrent access.
+
 # Release 0.5.0
 ## Major Features and Improvements
 * Allow buffer size to be configurable.
