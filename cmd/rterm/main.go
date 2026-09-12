@@ -35,7 +35,7 @@ func run() error {
 			Name:        "bash",
 			Description: "Bash (Unix shell)",
 			Writable:    true,
-			AuthCheck:   auth.NewTOTP("F4ECH5IH72ECOFFN4INKHXA5AVKTS256"),
+			AllowEmbed:  true,
 		},
 		rterm.Command{
 			Name:        "sh",

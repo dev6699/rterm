@@ -72,6 +72,8 @@ type Command struct {
 	Writable bool
 	// AuthCheck acts as pre-verification step before starts agent process
 	AuthCheck auth.AuthCheck
+	// AllowEmbed controls whether the command page may be embedded by a parent page.
+	AllowEmbed bool
 }
 
 // Register binds all command handlers to the http mux.
@@ -103,11 +105,17 @@ func Register(mux *http.ServeMux, commands ...Command) {
 		if strings.HasPrefix(r.URL.Path, defaultPrefix+"/") {
 
 			commandPath := strings.TrimPrefix(r.URL.Path, defaultPrefix+"/")
+			commandName := strings.TrimSuffix(commandPath, "/ws")
+			commandName = strings.TrimSuffix(commandName, "/")
+			cmd, isCommand := commandsMap[commandName]
+			if isCommand && r.URL.Query().Get("embed") == "1" && !cmd.AllowEmbed {
+				http.Error(w, "Embedding is disabled for this command", http.StatusForbidden)
+				return
+			}
 
 			if strings.HasSuffix(commandPath, "/ws") {
 				if r.Method == http.MethodGet {
-					c := strings.TrimSuffix(commandPath, "/ws")
-					cmd, ok := commandsMap[c]
+					cmd, ok := commandsMap[commandName]
 					if !ok {
 						http.NotFound(w, r)
 						return
@@ -126,8 +134,8 @@ func Register(mux *http.ServeMux, commands ...Command) {
 			}
 
 			if r.Method == http.MethodGet {
-				ext := filepath.Ext(r.URL.String())
-				stripPrefix := r.URL.String()
+				ext := filepath.Ext(r.URL.Path)
+				stripPrefix := r.URL.Path
 				if ext != "" {
 					stripPrefix = defaultPrefix
 				}
