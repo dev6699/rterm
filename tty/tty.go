@@ -20,6 +20,7 @@ type TTY struct {
 
 	// mutex to ensure no concurrent write to controller
 	mut                  sync.Mutex
+	agentMut             sync.RWMutex
 	agentBufferSize      int
 	controllerBufferSize int
 	writable             bool
@@ -54,11 +55,12 @@ func (t *TTY) Run(ctx context.Context) error {
 	go func() {
 		buf := make([]byte, t.agentBufferSize)
 		for {
-			if t.agent == nil {
+			agent := t.currentAgent()
+			if agent == nil {
 				continue
 			}
 
-			n, err := t.agent.Read(buf)
+			n, err := agent.Read(buf)
 			if err != nil {
 				errCh <- err
 				return
@@ -112,6 +114,8 @@ func (t *TTY) initialize() error {
 }
 
 func (t *TTY) createAgent() error {
+	t.agentMut.Lock()
+	defer t.agentMut.Unlock()
 	if t.agent != nil {
 		return nil
 	}
@@ -123,6 +127,18 @@ func (t *TTY) createAgent() error {
 	}
 
 	return nil
+}
+
+func (t *TTY) currentAgent() Agent {
+	t.agentMut.RLock()
+	defer t.agentMut.RUnlock()
+	return t.agent
+}
+
+func (t *TTY) setAgent(agent Agent) {
+	t.agentMut.Lock()
+	defer t.agentMut.Unlock()
+	t.agent = agent
 }
 
 func (t *TTY) handleAgentData(data []byte) error {
@@ -146,11 +162,11 @@ func (t *TTY) handleControllerData(data []byte) error {
 		}
 
 		if pass {
-			var err error
-			t.agent, err = t.agentFactory()
+			agent, err := t.agentFactory()
 			if err != nil {
 				return err
 			}
+			t.setAgent(agent)
 			t.controllerWrite(AuthOK, nil)
 		} else {
 			t.controllerWrite(AuthFailed, nil)
@@ -161,7 +177,11 @@ func (t *TTY) handleControllerData(data []byte) error {
 			return nil
 		}
 
-		_, err := t.agent.Write(data[1:])
+		agent := t.currentAgent()
+		if agent == nil {
+			return nil
+		}
+		_, err := agent.Write(data[1:])
 		if err != nil {
 			return err
 		}
@@ -178,7 +198,11 @@ func (t *TTY) handleControllerData(data []byte) error {
 			return err
 		}
 
-		return t.agent.ResizeTerminal(r.Cols, r.Rows)
+		agent := t.currentAgent()
+		if agent == nil {
+			return nil
+		}
+		return agent.ResizeTerminal(r.Cols, r.Rows)
 
 	default:
 		return fmt.Errorf("tty: unknown message type: %c", msg)

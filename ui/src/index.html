@@ -25,8 +25,39 @@
             height: 100%;
         }
 
+        .embedded .xterm {
+            font-size: 11px;
+            line-height: 1.1;
+        }
+
         .xterm-viewport {
             overflow-y: auto !important;
+        }
+
+        .embedded * {
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.5333) transparent;
+        }
+
+        .embedded *::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+            background: transparent;
+        }
+
+        .embedded *::-webkit-scrollbar-button,
+        .embedded *::-webkit-scrollbar-corner {
+            display: none;
+            background: transparent;
+        }
+
+        .embedded *::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .embedded *::-webkit-scrollbar-thumb {
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.5333);
         }
 
         #auth {
