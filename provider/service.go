@@ -25,7 +25,8 @@ type Session struct {
 	Provider string `json:"provider"`
 	Target   string `json:"target"`
 	User     string `json:"user"`
-	Token    string `json:"token"`
+	Token    string `json:"token,omitempty"`
+	Handoff  string `json:"handoff,omitempty"`
 }
 
 func newToken() string {
@@ -50,6 +51,12 @@ type SessionRequest struct {
 	User   string `json:"user"`
 }
 
+type sessionHandoff struct {
+	sessionID string
+	token     string
+	expiresAt time.Time
+}
+
 type Service struct {
 	profiles  map[string]Profile
 	sessions  map[string]Session
@@ -57,6 +64,7 @@ type Service struct {
 	output    map[string]string
 	terminals map[string]*tty.TTY
 	executeMu map[string]*sync.Mutex
+	handoffs  map[string]sessionHandoff
 }
 
 func NewService(config Config) *Service {
@@ -64,7 +72,7 @@ func NewService(config Config) *Service {
 	for _, profile := range config.Providers {
 		profiles[profile.Name] = profile
 	}
-	return &Service{profiles: profiles, sessions: make(map[string]Session), output: make(map[string]string), terminals: make(map[string]*tty.TTY), executeMu: make(map[string]*sync.Mutex)}
+	return &Service{profiles: profiles, sessions: make(map[string]Session), output: make(map[string]string), terminals: make(map[string]*tty.TTY), executeMu: make(map[string]*sync.Mutex), handoffs: make(map[string]sessionHandoff)}
 }
 
 func (s *Service) Profiles() []string {
@@ -218,26 +226,66 @@ func (s *Service) Handler() http.Handler {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			if r.Header.Get("X-Rterm-Handoff") == "1" {
+				handoff := newToken()
+				s.mu.Lock()
+				s.handoffs[handoff] = sessionHandoff{
+					sessionID: session.ID,
+					token:     session.Token,
+					expiresAt: time.Now().Add(time.Minute),
+				}
+				s.mu.Unlock()
+				session.Handoff = handoff
+			}
 			writeJSON(w, http.StatusCreated, session)
 			return
 		}
+		if len(parts) == 3 && parts[0] == "sessions" && parts[2] == "handoff" && r.Method == http.MethodPost {
+			var request struct {
+				Handoff string `json:"handoff"`
+			}
+			if err := json.NewDecoder(io.LimitReader(r.Body, 8*1024)).Decode(&request); err != nil {
+				http.Error(w, "invalid handoff", http.StatusBadRequest)
+				return
+			}
+			s.mu.Lock()
+			handoff, ok := s.handoffs[request.Handoff]
+			if ok && handoff.sessionID == parts[1] && time.Now().Before(handoff.expiresAt) {
+				delete(s.handoffs, request.Handoff)
+			}
+			s.mu.Unlock()
+			if !ok || handoff.sessionID != parts[1] || !time.Now().Before(handoff.expiresAt) {
+				http.Error(w, "invalid handoff", http.StatusUnauthorized)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"token": handoff.token})
+			return
+		}
 		if len(parts) == 3 && parts[0] == "sessions" && parts[2] == "upload" && r.Method == http.MethodPost {
-			if !s.authorize(w, r, parts[1]) { return }
+			if !s.authorize(w, r, parts[1]) {
+				return
+			}
 			s.transfer(w, r, parts[1], true)
 			return
 		}
 		if len(parts) == 3 && parts[0] == "sessions" && parts[2] == "execute" && r.Method == http.MethodPost {
-			if !s.authorize(w, r, parts[1]) { return }
+			if !s.authorize(w, r, parts[1]) {
+				return
+			}
 			s.execute(w, r, parts[1])
 			return
 		}
 		if len(parts) == 3 && parts[0] == "sessions" && parts[2] == "read" && r.Method == http.MethodGet {
-			if !s.authorize(w, r, parts[1]) { return }
+			if !s.authorize(w, r, parts[1]) {
+				return
+			}
 			s.read(w, r, parts[1])
 			return
 		}
 		if len(parts) == 3 && parts[0] == "sessions" && parts[2] == "download" && r.Method == http.MethodGet {
-			if !s.authorize(w, r, parts[1]) { return }
+			if !s.authorize(w, r, parts[1]) {
+				return
+			}
 			s.transfer(w, r, parts[1], false)
 			return
 		}
@@ -246,7 +294,9 @@ func (s *Service) Handler() http.Handler {
 }
 
 func (s *Service) authorize(w http.ResponseWriter, r *http.Request, sessionID string) bool {
-	if s.AuthorizeSession(r, sessionID) { return true }
+	if s.AuthorizeSession(r, sessionID) {
+		return true
+	}
 	http.Error(w, "unauthorized session", http.StatusUnauthorized)
 	return false
 }

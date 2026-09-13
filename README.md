@@ -151,6 +151,13 @@ The token is required for every session operation. HTTP requests use:
 Authorization: Bearer session-token
 ```
 
+Embedded provider pages request `X-Rterm-Handoff: 1` when creating a session.
+The response includes a one-time `handoff` value in addition to the token used
+by the provider page itself. The page sends only the handoff value and session
+metadata to its host. A trusted host exchanges that value at
+`POST /api/sessions/{session}/handoff` to obtain the token without forwarding
+it through the host page.
+
 Session operations are:
 
 ```text

@@ -153,7 +153,7 @@ function activateProviderSession(session) {
         document.body.classList.add('terminal-active')
         document.documentElement.classList.add('terminal-active')
         setupTransfers()
-        parentEvent('session-ready', { sessionId: session.id, token: session.token, provider: providerName, target: session.target, user: session.user })
+        parentEvent('session-ready', { sessionId: session.id, handoff: session.handoff, provider: providerName, target: session.target, user: session.user })
         parentEvent('authenticated')
     }
     resize()
@@ -365,14 +365,13 @@ async function setupProvider() {
                 statusElement.textContent = `Connecting to ${targetSelect.value}…`
                 const create = await fetch(`${providerApiPrefix}/providers/${encodeURIComponent(providerName)}/sessions`, {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
+                    headers: {'Content-Type': 'application/json', 'X-Rterm-Handoff': '1'},
                     body: JSON.stringify({target: targetSelect.value, user: userSelect.value})
                 })
                 if (!create.ok) throw new Error(await create.text())
                 const session = await create.json()
                 const providerSession = {
                     id: session.id,
-                    token: session.token,
                     target: session.target,
                     user: session.user,
                     state: 'connecting',
@@ -385,7 +384,7 @@ async function setupProvider() {
                 activeProviderSession = providerSession
                 activeSessionId = providerSession.id
                 renderTabs()
-                parentEvent('session-ready', { sessionId: session.id, token: session.token, provider: providerName, target: session.target, user: session.user })
+                parentEvent('session-ready', { sessionId: session.id, handoff: session.handoff, provider: providerName, target: session.target, user: session.user })
                 parentEvent('connecting')
                 providerElement.style.display = 'none'
                 setupTransfers()

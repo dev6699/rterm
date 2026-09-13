@@ -1,3 +1,7 @@
+# Release 0.8.0
+## Major Features and Improvements
+* Add one-time credential handoff for embedded sessions
+
 # Release 0.7.0
 ## Major Features and Improvements
 * Add configurable provider profiles with target discovery and session-based connections.
