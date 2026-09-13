@@ -13,6 +13,8 @@ type Command struct {
 	Factory   tty.AgentFactory
 	AuthCheck auth.AuthCheck
 	Writable  bool
+	OnOutput  func([]byte)
+	OnTTY     func(*tty.TTY)
 }
 
 func HandleWebSocket(wsUpgrader *websocket.Upgrader, cmd Command) func(http.ResponseWriter, *http.Request) {
@@ -26,6 +28,10 @@ func HandleWebSocket(wsUpgrader *websocket.Upgrader, cmd Command) func(http.Resp
 		defer conn.Close()
 
 		t := tty.New(WSController{Conn: conn}, cmd.Factory, wsUpgrader.ReadBufferSize, wsUpgrader.WriteBufferSize)
+		t.WithOutput(cmd.OnOutput)
+		if cmd.OnTTY != nil {
+			cmd.OnTTY(t)
+		}
 		t.WithWrite(cmd.Writable)
 		t.WithAuthCheck(cmd.AuthCheck)
 

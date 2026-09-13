@@ -1,0 +1,27 @@
+{
+  "providers": [
+    {
+      "name": "ssh",
+      "discover": {
+        "program": "cat",
+        "args": ["ssh-targets.json"],
+        "targetPath": "hostname",
+        "labelPath": "label"
+      },
+      "users": ["ubuntu", "root"],
+      "connect": {
+        "program": "ssh",
+        "args": ["{user}@{target}"]
+      },
+      "upload": {
+        "program": "scp",
+        "args": ["{localPath}", "{user}@{target}:{remotePath}"]
+      },
+      "download": {
+        "program": "scp",
+        "args": ["{user}@{target}:{remotePath}", "{localPath}"]
+      },
+      "maxTransferBytes": 4294967296
+    }
+  ]
+}

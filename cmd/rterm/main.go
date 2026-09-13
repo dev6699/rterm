@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"strings"
 
 	"github.com/dev6699/rterm"
@@ -29,8 +30,13 @@ func run() error {
 	rterm.SetPrefix("/")
 	mux := http.NewServeMux()
 
-	rterm.Register(
+	configPath := os.Getenv("RTERM_CONFIG")
+	if configPath == "" {
+		configPath = "rterm.json"
+	}
+	if err := rterm.RegisterWithConfig(
 		mux,
+		configPath,
 		rterm.Command{
 			Name:        "bash",
 			Description: "Bash (Unix shell)",
@@ -52,7 +58,9 @@ func run() error {
 			Args:        strings.Split("--query-gpu=utilization.gpu --format=csv -l 1", " "),
 			Description: "Monitors and outputs the GPU utilization percentage every second",
 		},
-	)
+	); err != nil {
+		return err
+	}
 
 	addr := ":5000"
 	server := &http.Server{

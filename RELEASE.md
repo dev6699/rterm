@@ -1,3 +1,11 @@
+# Release 0.7.0
+## Major Features and Improvements
+* Add configurable provider profiles with target discovery and session-based connections.
+* Add provider session authentication, command execution, output reads, and file transfers.
+* Add provider-specific terminal tabs and embedded provider UI support.
+* Add the example provider configuration and `RTERM_CONFIG` environment override.
+* Preserve configured URL prefixes for provider APIs, WebSockets, and terminal assets, including root deployments.
+
 # Release 0.6.0
 ## Major Features and Improvements
 * Add embedded terminal and parent bridge support.

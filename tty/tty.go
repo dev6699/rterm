@@ -25,6 +25,7 @@ type TTY struct {
 	controllerBufferSize int
 	writable             bool
 	authCheck            auth.AuthCheck
+	onOutput             func([]byte)
 }
 
 func New(controller Controller, agentFactory AgentFactory, agentBufferSize int, controllerBufferSize int) *TTY {
@@ -42,6 +43,23 @@ func (t *TTY) WithWrite(b bool) {
 
 func (t *TTY) WithAuthCheck(c auth.AuthCheck) {
 	t.authCheck = c
+}
+
+// WriteInput writes bytes to the agent attached to this terminal.
+func (t *TTY) WriteInput(data []byte) error {
+	if !t.writable || len(data) == 0 {
+		return nil
+	}
+	agent := t.currentAgent()
+	if agent == nil {
+		return fmt.Errorf("tty: terminal is not connected")
+	}
+	_, err := agent.Write(data)
+	return err
+}
+
+func (t *TTY) WithOutput(callback func([]byte)) {
+	t.onOutput = callback
 }
 
 func (t *TTY) Run(ctx context.Context) error {
@@ -142,6 +160,9 @@ func (t *TTY) setAgent(agent Agent) {
 }
 
 func (t *TTY) handleAgentData(data []byte) error {
+	if t.onOutput != nil {
+		t.onOutput(append([]byte(nil), data...))
+	}
 	s := base64.StdEncoding.EncodeToString(data)
 	return t.controllerWrite(Output, []byte(s))
 }
