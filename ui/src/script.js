@@ -13,12 +13,18 @@ const providerMatch = window.location.pathname.match(/\/provider\/([^/]+)\/?$/)
 const providerName = providerMatch ? decodeURIComponent(providerMatch[1]) : ''
 const providerPrefix = providerMatch ? window.location.pathname.slice(0, providerMatch.index) : ''
 const providerApiPrefix = `${providerPrefix}/api`
+const parentOrigin = new URLSearchParams(window.location.search).get('parentOrigin')
 document.body.classList.toggle('embedded', embedded)
 document.documentElement.classList.toggle('provider-page', Boolean(providerName))
 
 function parentEvent(type, data = {}) {
-    if (!embedded || window.parent === window) return
-    window.parent.postMessage({ source: 'rterm', type, ...data }, '*')
+    if (!embedded || window.parent === window || !parentOrigin) return
+    try {
+        if (new URL(parentOrigin).origin !== parentOrigin) return
+        window.parent.postMessage({ source: 'rterm', type, ...data }, parentOrigin)
+    } catch (_) {
+        // Ignore an invalid or unconfigured parent origin.
+    }
 }
 
 function sendSocket(message) {

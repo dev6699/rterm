@@ -82,6 +82,17 @@ notifies its parent with `postMessage` events using `{ source: "rterm" }`.
 The parent may send `{ type: "write", input }`,
 `authenticate`, or `resize` messages to control the session.
 
+Embedded pages must also receive the exact trusted parent origin through the
+`parentOrigin` query parameter, for example:
+
+```text
+?embed=1&parentOrigin=https%3A%2F%2Fconsole.example
+```
+
+The page sends events only to that origin. If `parentOrigin` is missing,
+invalid, or not an exact origin, no parent events are sent. Hosts should also
+validate the message source and `event.origin` before accepting events.
+
 For a host that owns the WebSocket connection, use `?embed=1&bridge=parent`.
 In bridge mode the rterm page renders the terminal but forwards input,
 authentication, and resize messages to the parent; the parent supplies output
