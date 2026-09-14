@@ -10,17 +10,21 @@ import (
 	"strings"
 )
 
+// Command identifies an executable and its argument template.
 type Command struct {
 	Program string   `json:"program"`
 	Args    []string `json:"args"`
 }
 
+// DiscoveryCommand describes the provider command used to enumerate targets.
 type DiscoveryCommand struct {
 	Command
 	TargetPath string `json:"targetPath"`
 	LabelPath  string `json:"labelPath,omitempty"`
 }
 
+// Profile defines a provider and the commands used to discover, connect to,
+// upload to, and download from its targets.
 type Profile struct {
 	Name     string           `json:"name"`
 	Discover DiscoveryCommand `json:"discover"`
@@ -31,20 +35,24 @@ type Profile struct {
 	MaxBytes int64            `json:"maxTransferBytes,omitempty"`
 }
 
+// Config is the provider configuration loaded by the rterm service.
 type Config struct {
 	Providers []Profile `json:"providers"`
 }
 
+// Target is a provider target and the users allowed to access it.
 type Target struct {
 	ID    string   `json:"id"`
 	Label string   `json:"label"`
 	Users []string `json:"users"`
 }
 
+// Discovery is the normalized result of provider target discovery.
 type Discovery struct {
 	Targets []Target `json:"targets"`
 }
 
+// Load reads, decodes, and validates provider configuration from path.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -60,6 +68,8 @@ func Load(path string) (Config, error) {
 	return config, nil
 }
 
+// Validate checks that every configured provider has unique names and all
+// required commands, discovery fields, and users.
 func (c Config) Validate() error {
 	seen := make(map[string]struct{}, len(c.Providers))
 	for _, profile := range c.Providers {
@@ -90,6 +100,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// Run executes a provider command after expanding its argument placeholders.
 func (p Profile) Run(ctx context.Context, command Command, values map[string]string, input []byte) ([]byte, error) {
 	args, err := expandArgs(command.Args, values)
 	if err != nil {
@@ -106,6 +117,7 @@ func (p Profile) Run(ctx context.Context, command Command, values map[string]str
 	return output, nil
 }
 
+// DiscoverTargets executes the discovery command and normalizes its output.
 func (p Profile) DiscoverTargets(ctx context.Context) (Discovery, error) {
 	output, err := p.Run(ctx, p.Discover.Command, nil, nil)
 	if err != nil {
@@ -158,6 +170,7 @@ func stringPath(value map[string]any, path string) (string, bool) {
 	return text, ok
 }
 
+// Target returns the discovered target with id, if present.
 func (p Profile) Target(id string, discovery Discovery) (Target, bool) {
 	for _, target := range discovery.Targets {
 		if target.ID == id {

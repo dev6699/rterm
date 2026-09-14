@@ -18,8 +18,10 @@ import (
 	"time"
 
 	"github.com/dev6699/rterm/tty"
+	"github.com/gorilla/websocket"
 )
 
+// Session contains the credentials and target metadata for a provider session.
 type Session struct {
 	ID       string `json:"id"`
 	Provider string `json:"provider"`
@@ -37,15 +39,18 @@ func newToken() string {
 	return fmt.Sprintf("%x", value)
 }
 
+// ExecuteRequest contains a shell command to run in a session terminal.
 type ExecuteRequest struct {
 	Command string `json:"command"`
 }
 
+// ExecuteResponse contains command output and its exit status.
 type ExecuteResponse struct {
 	Output   string `json:"output"`
 	ExitCode int    `json:"exitCode"`
 }
 
+// SessionRequest identifies the target and user for a new provider session.
 type SessionRequest struct {
 	Target string `json:"target"`
 	User   string `json:"user"`
@@ -57,6 +62,7 @@ type sessionHandoff struct {
 	expiresAt time.Time
 }
 
+// Service manages provider sessions, terminal output, transfers, and events.
 type Service struct {
 	profiles  map[string]Profile
 	sessions  map[string]Session
@@ -65,16 +71,257 @@ type Service struct {
 	terminals map[string]*tty.TTY
 	executeMu map[string]*sync.Mutex
 	handoffs  map[string]sessionHandoff
+	agents    map[string]*sharedAgent
+	events    map[*websocket.Conn]*eventClient
 }
 
+type eventClient struct {
+	sessionID string
+	writeMu   sync.Mutex
+}
+
+// NewService creates a provider service from config.
 func NewService(config Config) *Service {
 	profiles := make(map[string]Profile, len(config.Providers))
 	for _, profile := range config.Providers {
 		profiles[profile.Name] = profile
 	}
-	return &Service{profiles: profiles, sessions: make(map[string]Session), output: make(map[string]string), terminals: make(map[string]*tty.TTY), executeMu: make(map[string]*sync.Mutex), handoffs: make(map[string]sessionHandoff)}
+	return &Service{profiles: profiles, sessions: make(map[string]Session), output: make(map[string]string), terminals: make(map[string]*tty.TTY), executeMu: make(map[string]*sync.Mutex), handoffs: make(map[string]sessionHandoff), agents: make(map[string]*sharedAgent), events: make(map[*websocket.Conn]*eventClient)}
 }
 
+// HandleEventsWebSocket upgrades an authorized request and serves session events.
+func (s *Service) HandleEventsWebSocket(upgrader *websocket.Upgrader, w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session")
+	if sessionID == "" || !s.AuthorizeSession(r, sessionID) {
+		http.Error(w, "unauthorized session", http.StatusUnauthorized)
+		return
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	client := &eventClient{sessionID: sessionID}
+	s.events[conn] = client
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.events, conn)
+		s.mu.Unlock()
+		client.writeMu.Lock()
+		_ = conn.Close()
+		client.writeMu.Unlock()
+	}()
+	client.writeMu.Lock()
+	_ = conn.WriteJSON(map[string]any{"type": "selected", "sessionId": sessionID})
+	client.writeMu.Unlock()
+	for {
+		var message struct {
+			Type      string `json:"type"`
+			SessionID string `json:"sessionId"`
+		}
+		if err := conn.ReadJSON(&message); err != nil {
+			return
+		}
+		switch message.Type {
+		case "new-session":
+			s.broadcastEvent(sessionID, map[string]any{"type": "new-session"})
+		case "close":
+			if _, ok := s.Session(message.SessionID); ok {
+				s.broadcastEvent(sessionID, map[string]any{"type": "closed", "sessionId": message.SessionID})
+			}
+		case "select":
+			s.selectSession(sessionID, message.SessionID)
+		}
+	}
+}
+
+func (s *Service) broadcastEvent(sessionID string, message any) {
+	s.mu.Lock()
+	clients := make([]struct {
+		conn   *websocket.Conn
+		client *eventClient
+	}, 0, len(s.events))
+	for conn, client := range s.events {
+		if client.sessionID == sessionID {
+			clients = append(clients, struct {
+				conn   *websocket.Conn
+				client *eventClient
+			}{conn: conn, client: client})
+		}
+	}
+	s.mu.Unlock()
+	for _, client := range clients {
+		client.client.writeMu.Lock()
+		_ = client.conn.WriteJSON(message)
+		client.client.writeMu.Unlock()
+	}
+}
+
+func (s *Service) selectSession(authorizedSessionID, sessionID string) {
+	if _, ok := s.Session(sessionID); !ok {
+		return
+	}
+	s.broadcastEvent(authorizedSessionID, map[string]any{"type": "selected", "sessionId": sessionID})
+}
+
+type sharedAgent struct {
+	mu          sync.Mutex
+	agent       tty.Agent
+	subscribers map[*sharedSubscription]struct{}
+	onOutput    func([]byte)
+	onEmpty     func()
+}
+
+// SharedAgent returns a terminal connection sharing the agent for sessionID.
+func (s *Service) SharedAgent(sessionID string, factory func() (tty.Agent, error), onOutput func([]byte)) (tty.Agent, error) {
+	s.mu.Lock()
+	shared := s.agents[sessionID]
+	created := false
+	if shared == nil {
+		agent, err := factory()
+		if err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+		shared = &sharedAgent{agent: agent, subscribers: make(map[*sharedSubscription]struct{}), onOutput: onOutput}
+		shared.onEmpty = func() {
+			s.mu.Lock()
+			if s.agents[sessionID] == shared {
+				delete(s.agents, sessionID)
+			}
+			s.mu.Unlock()
+		}
+		s.agents[sessionID] = shared
+		created = true
+	}
+	connection := shared.subscribe()
+	s.mu.Unlock()
+	if created {
+		go shared.readLoop()
+	}
+	return connection, nil
+}
+
+type sharedAgentConnection struct {
+	shared       *sharedAgent
+	subscription *sharedSubscription
+	pending      []byte
+	closeOnce    sync.Once
+}
+
+type sharedSubscription struct {
+	output chan []byte
+	done   chan struct{}
+}
+
+func (c *sharedAgentConnection) Read(data []byte) (int, error) {
+	var chunk []byte
+	if len(c.pending) > 0 {
+		chunk = c.pending
+		c.pending = nil
+	} else {
+		select {
+		case chunk = <-c.subscription.output:
+		case <-c.subscription.done:
+			return 0, io.EOF
+		}
+	}
+	n := copy(data, chunk)
+	if n < len(chunk) {
+		c.pending = append(c.pending, chunk[n:]...)
+	}
+	return n, nil
+}
+
+func (c *sharedAgentConnection) Write(data []byte) (int, error) {
+	c.shared.mu.Lock()
+	defer c.shared.mu.Unlock()
+	return c.shared.agent.Write(data)
+}
+
+func (c *sharedAgentConnection) ResizeTerminal(columns int, rows int) error {
+	c.shared.mu.Lock()
+	defer c.shared.mu.Unlock()
+	return c.shared.agent.ResizeTerminal(columns, rows)
+}
+
+func (c *sharedAgentConnection) Close() error {
+	c.closeOnce.Do(func() {
+		c.shared.removeSubscriber(c.subscription)
+	})
+	return nil
+}
+
+func (s *sharedAgent) subscribe() *sharedAgentConnection {
+	subscription := &sharedSubscription{output: make(chan []byte, 32), done: make(chan struct{})}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subscribers[subscription] = struct{}{}
+	return &sharedAgentConnection{shared: s, subscription: subscription}
+}
+
+func (s *sharedAgent) readLoop() {
+	buffer := make([]byte, 32*1024)
+	for {
+		n, err := s.agent.Read(buffer)
+		if n > 0 {
+			chunk := append([]byte(nil), buffer[:n]...)
+			s.mu.Lock()
+			onOutput := s.onOutput
+			subscribers := make([]*sharedSubscription, 0, len(s.subscribers))
+			for subscriber := range s.subscribers {
+				subscribers = append(subscribers, subscriber)
+			}
+			s.mu.Unlock()
+			if onOutput != nil {
+				onOutput(chunk)
+			}
+			for _, subscriber := range subscribers {
+				select {
+				case subscriber.output <- chunk:
+				case <-subscriber.done:
+				default:
+					// Evict stalled subscribers so they cannot block other clients.
+					s.removeSubscriber(subscriber)
+				}
+			}
+		}
+		if err != nil {
+			s.mu.Lock()
+			for subscriber := range s.subscribers {
+				close(subscriber.done)
+			}
+			s.subscribers = make(map[*sharedSubscription]struct{})
+			s.mu.Unlock()
+			if s.onEmpty != nil {
+				s.onEmpty()
+			}
+			return
+		}
+	}
+}
+
+func (s *sharedAgent) removeSubscriber(subscriber *sharedSubscription) {
+	closeAgent := false
+	s.mu.Lock()
+	if _, ok := s.subscribers[subscriber]; ok {
+		delete(s.subscribers, subscriber)
+		close(subscriber.done)
+		closeAgent = len(s.subscribers) == 0
+	}
+	s.mu.Unlock()
+	if closeAgent {
+		if closer, ok := s.agent.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		if s.onEmpty != nil {
+			s.onEmpty()
+		}
+	}
+}
+
+// Profiles returns configured provider names in sorted order.
 func (s *Service) Profiles() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -86,6 +333,7 @@ func (s *Service) Profiles() []string {
 	return result
 }
 
+// Profile returns a configured provider by name.
 func (s *Service) Profile(name string) (Profile, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -93,6 +341,7 @@ func (s *Service) Profile(name string) (Profile, bool) {
 	return profile, ok
 }
 
+// Session returns a managed session by ID.
 func (s *Service) Session(id string) (Session, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -100,6 +349,7 @@ func (s *Service) Session(id string) (Session, bool) {
 	return session, ok
 }
 
+// CreateSession discovers and validates a target before creating its session.
 func (s *Service) CreateSession(ctx context.Context, profileName string, request SessionRequest) (Session, error) {
 	profile, ok := s.Profile(profileName)
 	if !ok {
@@ -125,6 +375,7 @@ func (s *Service) CreateSession(ctx context.Context, profileName string, request
 	return session, nil
 }
 
+// AuthorizeSession verifies a bearer token for a session request.
 func (s *Service) AuthorizeSession(r *http.Request, sessionID string) bool {
 	session, ok := s.Session(sessionID)
 	if !ok {
@@ -137,6 +388,7 @@ func (s *Service) AuthorizeSession(r *http.Request, sessionID string) bool {
 	return token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(session.Token)) == 1
 }
 
+// AttachTerminal associates a running TTY with an existing session.
 func (s *Service) AttachTerminal(sessionID string, terminal *tty.TTY) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -147,6 +399,7 @@ func (s *Service) AttachTerminal(sessionID string, terminal *tty.TTY) bool {
 	return true
 }
 
+// AppendOutput stores terminal output for an existing session.
 func (s *Service) AppendOutput(sessionID string, data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -159,6 +412,7 @@ func (s *Service) AppendOutput(sessionID string, data []byte) {
 	}
 }
 
+// ReadOutput returns recent output and whether older lines were truncated.
 func (s *Service) ReadOutput(sessionID string, maxLines int) (string, bool) {
 	s.mu.RLock()
 	output, ok := s.output[sessionID]
@@ -177,6 +431,7 @@ func (s *Service) ReadOutput(sessionID string, maxLines int) (string, bool) {
 	return strings.Join(lines, "\n"), truncated
 }
 
+// ConnectArgs expands the configured connection command for a session.
 func (s *Service) ConnectArgs(sessionID string) (string, []string, error) {
 	session, ok := s.Session(sessionID)
 	if !ok {
@@ -193,6 +448,7 @@ func (s *Service) ConnectArgs(sessionID string) (string, []string, error) {
 	return profile.Connect.Program, args, err
 }
 
+// Handler returns the HTTP handler for provider and session APIs.
 func (s *Service) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/")
@@ -259,6 +515,26 @@ func (s *Service) Handler() http.Handler {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]string{"token": handoff.token})
+			return
+		}
+		if len(parts) == 3 && parts[0] == "sessions" && parts[2] == "share" && r.Method == http.MethodPost {
+			if !s.authorize(w, r, parts[1]) {
+				return
+			}
+			session, ok := s.Session(parts[1])
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			handoff := newToken()
+			s.mu.Lock()
+			s.handoffs[handoff] = sessionHandoff{
+				sessionID: session.ID,
+				token:     session.Token,
+				expiresAt: time.Now().Add(time.Minute),
+			}
+			s.mu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]string{"handoff": handoff})
 			return
 		}
 		if len(parts) == 3 && parts[0] == "sessions" && parts[2] == "upload" && r.Method == http.MethodPost {

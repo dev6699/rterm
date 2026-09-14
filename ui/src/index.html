@@ -263,7 +263,6 @@
             font-size: 11px;
         }
 
-        .embedded #provider-status,
         .embedded #provider-error {
             min-height: 1em;
             font-size: 11px;
@@ -330,11 +329,6 @@
         #connect-provider:disabled {
             opacity: 0.55;
             cursor: wait;
-        }
-
-        #provider-status {
-            min-height: 1.2em;
-            color: #aaa;
         }
 
         #provider-error {
@@ -533,7 +527,6 @@
                     <select id="user-select"></select>
                 </label>
             </div>
-            <div id="provider-status" role="status" aria-live="polite"></div>
             <div id="provider-error"></div>
             <button id="connect-provider" type="button">Connect</button>
         </div>

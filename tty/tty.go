@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/dev6699/rterm/auth"
@@ -67,6 +68,13 @@ func (t *TTY) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if agent := t.currentAgent(); agent != nil {
+			if closer, ok := agent.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		}
+	}()
 
 	errCh := make(chan error, 2)
 

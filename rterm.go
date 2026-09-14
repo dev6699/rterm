@@ -128,6 +128,10 @@ func register(mux *http.ServeMux, commands []Command, providers *provider.Servic
 			apiPrefix = "/api/"
 		}
 		if providers != nil && strings.HasPrefix(r.URL.Path, apiPrefix) {
+			if strings.HasSuffix(r.URL.Path, "/api/events/ws") {
+				providers.HandleEventsWebSocket(&wsUpgrader, w, r)
+				return
+			}
 			apiPath := strings.TrimPrefix(r.URL.Path, defaultPrefix)
 			if defaultPrefix == "/" {
 				apiPath = r.URL.Path
@@ -145,9 +149,10 @@ func register(mux *http.ServeMux, commands []Command, providers *provider.Servic
 						return
 					}
 					server.HandleWebSocket(&wsUpgrader, server.Command{
-						Factory:  func() (tty.Agent, error) { return command.New(program, args) },
+						Factory: func() (tty.Agent, error) {
+							return providers.SharedAgent(parts[2], func() (tty.Agent, error) { return command.New(program, args) }, func(data []byte) { providers.AppendOutput(parts[2], data) })
+						},
 						Writable: true,
-						OnOutput: func(data []byte) { providers.AppendOutput(parts[2], data) },
 						OnTTY:    func(terminal *tty.TTY) { providers.AttachTerminal(parts[2], terminal) },
 					})(w, r)
 					return

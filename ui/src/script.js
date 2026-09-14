@@ -14,17 +14,18 @@ const providerName = providerMatch ? decodeURIComponent(providerMatch[1]) : ''
 const providerPrefix = providerMatch ? window.location.pathname.slice(0, providerMatch.index) : ''
 const providerApiPrefix = `${providerPrefix}/api`
 const parentOrigin = new URLSearchParams(window.location.search).get('parentOrigin')
+let trustedParentOrigin = ''
+try {
+    if (parentOrigin && new URL(parentOrigin).origin === parentOrigin) trustedParentOrigin = parentOrigin
+} catch (_) {
+    // Ignore an invalid or unconfigured parent origin.
+}
 document.body.classList.toggle('embedded', embedded)
 document.documentElement.classList.toggle('provider-page', Boolean(providerName))
 
 function parentEvent(type, data = {}) {
-    if (!embedded || window.parent === window || !parentOrigin) return
-    try {
-        if (new URL(parentOrigin).origin !== parentOrigin) return
-        window.parent.postMessage({ source: 'rterm', type, ...data }, parentOrigin)
-    } catch (_) {
-        // Ignore an invalid or unconfigured parent origin.
-    }
+    if (!embedded || window.parent === window || !trustedParentOrigin) return
+    window.parent.postMessage({ source: 'rterm', type, ...data }, trustedParentOrigin)
 }
 
 function sendSocket(message) {
@@ -41,7 +42,7 @@ function sendSocket(message) {
         }
         return
     }
-    if (socket.readyState === WebSocket.OPEN) socket.send(message)
+    if (socket?.readyState === WebSocket.OPEN) socket.send(message)
 }
 
 const terminalElement = document.getElementById('terminal')
@@ -55,6 +56,8 @@ let fitAddon
 let activeSessionId = ''
 const providerSessions = new Map()
 let activeProviderSession
+let selectingNewSession = false
+let eventsSocket
 let transferHandlersReady = false
 const tabsElement = document.getElementById('session-tabs')
 const newSessionButton = document.getElementById('new-session')
@@ -64,6 +67,7 @@ function showTerminal(session) {
         activateProviderSession(session)
         return
     }
+    if (session) socket = session.socket
     document.body.classList.add('terminal-active')
     document.documentElement.classList.add('terminal-active')
     terminalElement.style.display = 'block'
@@ -74,11 +78,11 @@ function showTerminal(session) {
         session.container = container
         terminalElement.appendChild(container)
     }
-    terminal = new Terminal({ fontSize: embedded ? 11 : 14, lineHeight: embedded ? 1.1 : 1.2 });
-    fitAddon = new FitAddon.FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(container);
-    fitAddon.fit();
+    terminal = new Terminal({ fontSize: embedded ? 11 : 14, lineHeight: embedded ? 1.1 : 1.2 })
+    fitAddon = new FitAddon.FitAddon()
+    terminal.loadAddon(fitAddon)
+    terminal.open(container)
+    fitAddon.fit()
 
     sendSocket(MSG_RESIZE_TERMINAL + JSON.stringify({ cols: terminal.cols, rows: terminal.rows }))
     parentEvent('terminal-ready', { cols: terminal.cols, rows: terminal.rows })
@@ -124,11 +128,17 @@ function renderTabs() {
 }
 
 function closeProviderSession(session) {
-    session.socket?.close()
+    session.closing = true
+    const socketToClose = session.socket
+    session.socket = undefined
     session.terminal?.dispose()
     session.container?.remove()
     providerSessions.delete(session.id)
+    if (eventsSocket?.readyState === WebSocket.OPEN)
+        eventsSocket.send(JSON.stringify({ type: 'close', sessionId: session.id }))
+    parentEvent('disconnected', { sessionId: session.id })
     if (session !== activeProviderSession) {
+        socketToClose?.close()
         renderTabs()
         return
     }
@@ -137,13 +147,17 @@ function closeProviderSession(session) {
     socket = undefined
     terminal = undefined
     fitAddon = undefined
-    parentEvent('disconnected', session ? { sessionId: session.id } : {})
-    const next = [...providerSessions.values()].find((candidate) => candidate.state === 'connected')
-    if (next) activateProviderSession(next)
-    else openNewSession()
+    const next = [...providerSessions.values()].filter((candidate) => candidate.state !== 'disconnected').at(-1)
+    if (next) {
+        activateProviderSession(next)
+    } else {
+        parentEvent('disconnected')
+        openNewSession()
+    }
+    socketToClose?.close()
 }
 
-function activateProviderSession(session) {
+function activateProviderSession(session, announce = true) {
     activeProviderSession = session
     activeSessionId = session.id
     socket = session.socket
@@ -159,13 +173,31 @@ function activateProviderSession(session) {
         document.body.classList.add('terminal-active')
         document.documentElement.classList.add('terminal-active')
         setupTransfers()
-        parentEvent('session-ready', { sessionId: session.id, handoff: session.handoff, provider: providerName, target: session.target, user: session.user })
+        if (session.handoff) {
+            parentEvent('session-ready', {
+                sessionId: session.id,
+                handoff: session.handoff,
+                provider: providerName,
+                target: session.target,
+                user: session.user,
+            })
+        } else if (announce) {
+            parentEvent('session-selected', { sessionId: session.id })
+        }
+        if (announce) {
+            if (eventsSocket?.readyState === WebSocket.OPEN)
+                eventsSocket.send(JSON.stringify({ type: 'select', sessionId: session.id }))
+        }
         parentEvent('authenticated')
     }
     resize()
 }
 
-function openNewSession() {
+function openNewSession(announce = false) {
+    if (selectingNewSession) return
+    selectingNewSession = true
+    if (announce && eventsSocket?.readyState === WebSocket.OPEN)
+        eventsSocket.send(JSON.stringify({ type: 'new-session' }))
     activeProviderSession = undefined
     activeSessionId = ''
     socket = undefined
@@ -178,34 +210,182 @@ function openNewSession() {
     hideTransfers()
     providerElement.style.display = 'flex'
     const connectButton = document.getElementById('connect-provider')
-    const statusElement = document.getElementById('provider-status')
     const errorElement = document.getElementById('provider-error')
     if (connectButton) connectButton.disabled = false
-    if (statusElement) statusElement.textContent = 'Select a target and user'
     if (errorElement) errorElement.textContent = ''
     renderTabs()
 }
 
-const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-const wsHost = window.location.hostname;
-const wsPort = window.location.port ? ':' + window.location.port : '';
-const wsPath = window.location.pathname + '/ws';
-const wsURL = wsProtocol + wsHost + wsPort + wsPath;
-let socket = parentBridge ? {
-    readyState: WebSocket.OPEN,
-    send: () => {},
-    addEventListener: () => {},
-} : undefined;
+function syncProviderSessions(sessions, activeSessionId) {
+    if (!Array.isArray(sessions)) return
+    const allowed = new Set(
+        sessions
+            .filter((session) => session && typeof session.sessionId === 'string')
+            .map((session) => session.sessionId),
+    )
+    for (const session of [...providerSessions.values()]) {
+        if (allowed.has(session.id)) continue
+        session.socket?.close()
+        session.terminal?.dispose()
+        session.container?.remove()
+        providerSessions.delete(session.id)
+    }
+    renderTabs()
+    if (selectingNewSession) return
+    const active = typeof activeSessionId === 'string' ? providerSessions.get(activeSessionId) : undefined
+    if (active && active !== activeProviderSession) activateProviderSession(active, false)
+}
+
+async function attachSharedSession() {
+    const query = new URLSearchParams(window.location.search)
+    const sessionIds = query.getAll('attachSession')
+    const handoffs = query.getAll('handoff')
+    if (!providerName || !sessionIds.length || sessionIds.length !== handoffs.length) return false
+    try {
+        for (let index = 0; index < sessionIds.length; index++) {
+            const sessionId = sessionIds[index]
+            const response = await fetch(`${providerApiPrefix}/sessions/${encodeURIComponent(sessionId)}/handoff`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ handoff: handoffs[index] }),
+            })
+            if (!response.ok) throw new Error(await response.text())
+            const result = await response.json()
+            const providerSession = {
+                id: sessionId,
+                token: result.token,
+                target: query.getAll('target')[index] || sessionId,
+                user: query.getAll('user')[index] || '',
+                state: 'connecting',
+                socket: undefined,
+                terminal: undefined,
+                fitAddon: undefined,
+                container: undefined,
+            }
+            providerSessions.set(providerSession.id, providerSession)
+            const sessionPath = `${providerApiPrefix}/sessions/${encodeURIComponent(sessionId)}/ws`
+            attachSocket(
+                `${wsProtocol}${wsHost}${wsPort}${sessionPath}?token=${encodeURIComponent(result.token)}`,
+                providerSession,
+            )
+        }
+        const active = providerSessions.get(query.get('activeSession')) || [...providerSessions.values()][0]
+        if (active) {
+            selectingNewSession = false
+            activeProviderSession = active
+            activeSessionId = active.id
+            showTerminal(active)
+            providerElement.style.display = 'none'
+            setupTransfers()
+        }
+        renderTabs()
+        return true
+    } catch (error) {
+        document.getElementById('provider-error').textContent = error instanceof Error ? error.message : String(error)
+        return false
+    }
+}
+
+async function attachSessionByHandoff(sessionId, handoff, target, user, activate) {
+    if (!providerName || !sessionId || !handoff || providerSessions.has(sessionId)) return
+    const response = await fetch(`${providerApiPrefix}/sessions/${encodeURIComponent(sessionId)}/handoff`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handoff }),
+    })
+    if (!response.ok) throw new Error(await response.text())
+    const result = await response.json()
+    const providerSession = {
+        id: sessionId,
+        token: result.token,
+        target: target || sessionId,
+        user: user || '',
+        state: 'connecting',
+        socket: undefined,
+        terminal: undefined,
+        fitAddon: undefined,
+        container: undefined,
+    }
+    providerSessions.set(providerSession.id, providerSession)
+    const sessionPath = `${providerApiPrefix}/sessions/${encodeURIComponent(sessionId)}/ws`
+    attachSocket(
+        `${wsProtocol}${wsHost}${wsPort}${sessionPath}?token=${encodeURIComponent(result.token)}`,
+        providerSession,
+    )
+    if (activate) {
+        selectingNewSession = false
+        activeProviderSession = providerSession
+        activeSessionId = providerSession.id
+        showTerminal(providerSession)
+        providerElement.style.display = 'none'
+        setupTransfers()
+    }
+    renderTabs()
+}
+
+const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://'
+const wsHost = window.location.hostname
+const wsPort = window.location.port ? ':' + window.location.port : ''
+const wsPath = window.location.pathname + '/ws'
+const wsURL = wsProtocol + wsHost + wsPort + wsPath
+let socket = parentBridge
+    ? {
+          readyState: WebSocket.OPEN,
+          send: () => {},
+          addEventListener: () => {},
+      }
+    : undefined
 
 function attachSocket(url, session) {
-    socket = new WebSocket(url)
-    if (session) session.socket = socket
-    socket.addEventListener('open', () => {
+    const connection = new WebSocket(url)
+    if (session) session.socket = connection
+    if (!session || session === activeProviderSession) socket = connection
+    if (session && providerName && !eventsSocket) connectEvents(session)
+    connection.addEventListener('open', () => {
         if (!session || session === activeProviderSession) parentEvent('connected')
     })
-    socket.addEventListener("message", (event) => handleSocketMessage(event, session))
-    socket.addEventListener("close", () => handleSocketClose(session))
-    socket.addEventListener("error", () => handleSocketError(session))
+    connection.addEventListener('message', (event) => handleSocketMessage(event, session))
+    connection.addEventListener('close', () => handleSocketClose(session, connection))
+    connection.addEventListener('error', () => handleSocketError(session, connection))
+}
+
+function connectEvents(session) {
+    const eventsPath = `${providerPrefix}/api/events/ws?session=${encodeURIComponent(session.id)}&token=${encodeURIComponent(session.token)}`
+    eventsSocket = new WebSocket(`${wsProtocol}${wsHost}${wsPort}${eventsPath}`)
+    eventsSocket.addEventListener('message', (event) => {
+        try {
+            const message = JSON.parse(event.data)
+            if (message.type === 'new-session') {
+                // The initiating view already opened the form locally. Other attached
+                // views should follow the new-session selection.
+                if (!selectingNewSession) openNewSession()
+                return
+            }
+            if (message.type === 'closed' && typeof message.sessionId === 'string') {
+                parentEvent('disconnected', { sessionId: message.sessionId })
+                const closed = providerSessions.get(message.sessionId)
+                if (closed) {
+                    closed.closing = true
+                    closed.socket?.close()
+                    closed.terminal?.dispose()
+                    closed.container?.remove()
+                    providerSessions.delete(closed.id)
+                    if (closed === activeProviderSession) openNewSession()
+                    else renderTabs()
+                }
+                return
+            }
+            if (message.type !== 'selected' || typeof message.sessionId !== 'string') return
+            if (selectingNewSession) return
+            const selected = providerSessions.get(message.sessionId)
+            if (selected) activateProviderSession(selected, false)
+        } catch (_) {
+            // Ignore malformed synchronization messages.
+        }
+    })
+    eventsSocket.addEventListener('close', () => {
+        eventsSocket = undefined
+    })
 }
 
 function handleSocketMessage(event, session) {
@@ -215,7 +395,7 @@ function handleSocketMessage(event, session) {
         case MSG_AUTH:
             if (session && session !== activeProviderSession) return
             authElement.style.display = 'flex'
-            document.getElementById('digit1').focus();
+            document.getElementById('digit1').focus()
             parentEvent('authentication-required')
             break
 
@@ -239,14 +419,17 @@ function handleSocketMessage(event, session) {
     }
 }
 
-function handleSocketClose(session) {
+function handleSocketClose(session, connection) {
     if (session) {
+        if (session.socket !== connection) return
         session.socket = undefined
         session.state = 'disconnected'
         if (session.terminal) session.terminal.dispose()
         session.terminal = undefined
         if (session.container) session.container.style.display = 'none'
         renderTabs()
+        if (session.closing) return
+        parentEvent('disconnected', { sessionId: session.id })
         if (session !== activeProviderSession) return
     } else if (terminal) {
         terminal.dispose()
@@ -260,12 +443,11 @@ function handleSocketClose(session) {
         terminalElement.style.display = 'none'
         providerElement.style.display = 'flex'
         document.getElementById('connect-provider').disabled = false
-        document.getElementById('provider-status').textContent = 'Disconnected'
     } else {
         terminalElement.style.display = 'block'
-        terminalElement.innerText = "Connection closed"
+        terminalElement.innerText = 'Connection closed'
     }
-    parentEvent('disconnected')
+    if (!session) parentEvent('disconnected')
 }
 
 // xterm.js answers terminal status queries with reports. When the remote PTY
@@ -273,20 +455,19 @@ function handleSocketClose(session) {
 // of being consumed by the program that issued the query. They are not useful
 // as interactive input in the web terminal, so keep them out of the PTY.
 function removeTerminalReports(data) {
-    return data.replace(
-        /\x1b\](?:10|11|12);rgb:[0-9a-f]+\/[0-9a-f]+\/[0-9a-f]+(?:\x07|\x1b\\)|\x1b\[\??\d+;\d+R/gi,
-        ''
-    )
+    return data.replace(/\x1b\](?:10|11|12);rgb:[0-9a-f]+\/[0-9a-f]+\/[0-9a-f]+(?:\x07|\x1b\\)|\x1b\[\??\d+;\d+R/gi, '')
 }
 
-function handleSocketError(session) {
+function handleSocketError(session, connection) {
     if (session) {
+        if (session.socket !== connection) return
         session.socket = undefined
         session.state = 'disconnected'
         if (session.terminal) session.terminal.dispose()
         session.terminal = undefined
         if (session.container) session.container.style.display = 'none'
         renderTabs()
+        if (session.closing) return
         if (session !== activeProviderSession) return
     }
     if (terminal) {
@@ -301,10 +482,9 @@ function handleSocketError(session) {
         terminalElement.style.display = 'none'
         providerElement.style.display = 'flex'
         document.getElementById('connect-provider').disabled = false
-        document.getElementById('provider-status').textContent = 'Connection error'
     } else {
         terminalElement.style.display = 'block'
-        terminalElement.innerText = "Connection error"
+        terminalElement.innerText = 'Connection error'
     }
     parentEvent('error', session ? { sessionId: session.id } : {})
 }
@@ -323,7 +503,6 @@ async function setupProvider() {
     providerElement.style.display = 'flex'
     const targetSelect = document.getElementById('target-select')
     const userSelect = document.getElementById('user-select')
-    const statusElement = document.getElementById('provider-status')
     const connectButton = document.getElementById('connect-provider')
     const errorElement = document.getElementById('provider-error')
     let targets = []
@@ -352,11 +531,9 @@ async function setupProvider() {
         }
         if (visible.some((target) => target.id === selected)) targetSelect.value = selected
         updateUsers()
-        statusElement.textContent = `${visible.length} target${visible.length === 1 ? '' : 's'} available`
     }
 
     try {
-        statusElement.textContent = 'Discovering targets…'
         connectButton.disabled = true
         const response = await fetch(`${providerApiPrefix}/providers/${encodeURIComponent(providerName)}/targets`)
         if (!response.ok) throw new Error(await response.text())
@@ -366,14 +543,17 @@ async function setupProvider() {
         targetSelect.addEventListener('change', updateUsers)
         connectButton.addEventListener('click', async () => {
             try {
+                selectingNewSession = false
                 connectButton.disabled = true
                 errorElement.textContent = ''
-                statusElement.textContent = `Connecting to ${targetSelect.value}…`
-                const create = await fetch(`${providerApiPrefix}/providers/${encodeURIComponent(providerName)}/sessions`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json', 'X-Rterm-Handoff': '1'},
-                    body: JSON.stringify({target: targetSelect.value, user: userSelect.value})
-                })
+                const create = await fetch(
+                    `${providerApiPrefix}/providers/${encodeURIComponent(providerName)}/sessions`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-Rterm-Handoff': '1' },
+                        body: JSON.stringify({ target: targetSelect.value, user: userSelect.value }),
+                    },
+                )
                 if (!create.ok) throw new Error(await create.text())
                 const session = await create.json()
                 const providerSession = {
@@ -391,25 +571,32 @@ async function setupProvider() {
                 activeProviderSession = providerSession
                 activeSessionId = providerSession.id
                 renderTabs()
-                parentEvent('session-ready', { sessionId: session.id, handoff: session.handoff, provider: providerName, target: session.target, user: session.user })
+                parentEvent('session-ready', {
+                    sessionId: session.id,
+                    handoff: session.handoff,
+                    provider: providerName,
+                    target: session.target,
+                    user: session.user,
+                })
                 parentEvent('connecting')
                 providerElement.style.display = 'none'
                 setupTransfers()
                 const sessionPath = `${providerApiPrefix}/sessions/${encodeURIComponent(session.id)}/ws`
-                attachSocket(`${wsProtocol}${wsHost}${wsPort}${sessionPath}?token=${encodeURIComponent(session.token)}`, providerSession)
+                attachSocket(
+                    `${wsProtocol}${wsHost}${wsPort}${sessionPath}?token=${encodeURIComponent(session.token)}`,
+                    providerSession,
+                )
             } catch (error) {
                 connectButton.disabled = false
-                statusElement.textContent = 'Connection failed'
                 errorElement.textContent = error instanceof Error ? error.message : String(error)
             }
         })
     } catch (error) {
-        statusElement.textContent = 'Discovery failed'
         errorElement.textContent = error instanceof Error ? error.message : String(error)
     }
 }
 
-if (newSessionButton) newSessionButton.addEventListener('click', openNewSession)
+if (newSessionButton) newSessionButton.addEventListener('click', () => openNewSession(true))
 
 function setupTransfers() {
     const panel = document.getElementById('transfer-panel')
@@ -458,12 +645,18 @@ function setupTransfers() {
         try {
             uploadButton.disabled = true
             statusElement.textContent = `Uploading ${file.name}…`
-            const uploadQuery = new URLSearchParams({path: uploadPath.value.trim(), filename: file.name})
-            const response = await fetch(`${providerApiPrefix}/sessions/${encodeURIComponent(activeSessionId)}/upload?${uploadQuery}`, {
-                method: 'POST',
-                headers: {Authorization: `Bearer ${providerSessions.get(activeSessionId).token}`},
-                body: file
+            const uploadQuery = new URLSearchParams({
+                path: uploadPath.value.trim(),
+                filename: file.name,
             })
+            const response = await fetch(
+                `${providerApiPrefix}/sessions/${encodeURIComponent(activeSessionId)}/upload?${uploadQuery}`,
+                {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${providerSessions.get(activeSessionId).token}` },
+                    body: file,
+                },
+            )
             if (!response.ok) throw new Error(await response.text())
             const result = await response.json()
             statusElement.textContent = `Upload complete (${result.bytes || file.size} bytes).`
@@ -483,9 +676,12 @@ function setupTransfers() {
         try {
             downloadButton.disabled = true
             statusElement.textContent = 'Downloading…'
-            const response = await fetch(`${providerApiPrefix}/sessions/${encodeURIComponent(activeSessionId)}/download?path=${encodeURIComponent(remotePath)}`, {
-                headers: {Authorization: `Bearer ${providerSessions.get(activeSessionId).token}`},
-            })
+            const response = await fetch(
+                `${providerApiPrefix}/sessions/${encodeURIComponent(activeSessionId)}/download?path=${encodeURIComponent(remotePath)}`,
+                {
+                    headers: { Authorization: `Bearer ${providerSessions.get(activeSessionId).token}` },
+                },
+            )
             if (!response.ok) throw new Error(await response.text())
             const blob = await response.blob()
             const link = document.createElement('a')
@@ -508,7 +704,6 @@ function setupTransfers() {
 if (providerName) setupProvider()
 else if (!parentBridge) attachSocket(wsURL)
 
-
 function resize() {
     if (!terminal || !fitAddon) return
     fitAddon.fit()
@@ -527,11 +722,11 @@ function writeTerminalData(data, session) {
 }
 
 function moveFocus(currentDigit) {
-    const currentInput = document.getElementById(`digit${currentDigit}`);
+    const currentInput = document.getElementById(`digit${currentDigit}`)
     if (currentInput.value.length === 1) {
         if (currentDigit < 6) {
-            document.getElementById('result').textContent = '';
-            document.getElementById(`digit${currentDigit + 1}`).focus();
+            document.getElementById('result').textContent = ''
+            document.getElementById(`digit${currentDigit + 1}`).focus()
         } else {
             submitCode()
         }
@@ -539,17 +734,17 @@ function moveFocus(currentDigit) {
 }
 
 function submitCode() {
-    const digits = [];
+    const digits = []
     for (let i = 1; i <= 6; i++) {
-        const digitInput = document.getElementById(`digit${i}`);
-        digits.push(digitInput.value);
+        const digitInput = document.getElementById(`digit${i}`)
+        digits.push(digitInput.value)
     }
-    const code = digits.join('');
+    const code = digits.join('')
     sendSocket(MSG_AUTH_TRY + code)
 }
 
 window.addEventListener('message', (event) => {
-    if (!embedded || event.source !== window.parent || !event.data) return
+    if (!embedded || event.source !== window.parent || event.origin !== trustedParentOrigin || !event.data) return
     switch (event.data.type) {
         case 'connected':
             break
@@ -601,6 +796,20 @@ window.addEventListener('message', (event) => {
                 if (session) activateProviderSession(session)
             }
             break
+        case 'sync-sessions':
+            if (providerName) syncProviderSessions(event.data.sessions, event.data.activeSessionId)
+            break
+        case 'attach-session':
+            if (providerName && typeof event.data.sessionId === 'string' && typeof event.data.handoff === 'string') {
+                void attachSessionByHandoff(
+                    event.data.sessionId,
+                    event.data.handoff,
+                    event.data.target,
+                    event.data.user,
+                    event.data.active === true,
+                )
+            }
+            break
         case 'write':
             if (typeof event.data.input === 'string') sendSocket(MSG_INPUT + event.data.input)
             break
@@ -616,11 +825,12 @@ window.addEventListener('message', (event) => {
 })
 
 parentEvent('loaded')
+void attachSharedSession()
 
 function clearDigits() {
     for (let i = 1; i <= 6; i++) {
-        document.getElementById(`digit${i}`).value = '';
+        document.getElementById(`digit${i}`).value = ''
     }
-    document.getElementById('digit1').focus();
-    document.getElementById('result').textContent = 'Invalid code';
+    document.getElementById('digit1').focus()
+    document.getElementById('result').textContent = 'Invalid code'
 }

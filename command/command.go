@@ -68,3 +68,7 @@ func (c *Command) ResizeTerminal(width int, height int) error {
 		return nil
 	}
 }
+
+func (c *Command) Close() error {
+	return c.pty.Close()
+}

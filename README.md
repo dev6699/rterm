@@ -177,12 +177,47 @@ POST /api/sessions/{session}/execute
 POST /api/sessions/{session}/upload?path=/remote/file[&filename=file]
 GET  /api/sessions/{session}/download?path=/remote/file
 GET  /api/sessions/{session}/ws?token=session-token
+POST /api/sessions/{session}/share
+POST /api/sessions/{session}/handoff
 ```
 
 The WebSocket query token is supported because browser WebSocket connections
 cannot set arbitrary authorization headers. A session ID alone is not a
 credential. The provider page may keep multiple sessions open in tabs; each
 tab has its own terminal, connection, token, and transfer state.
+
+#### Shared provider sessions
+
+Multiple authorized WebSocket clients can connect to the same provider session.
+They share one underlying provider process, and output from that process is
+broadcast to every connected client. Writes and terminal resizes are serialized
+against each other. Closing one client removes only that client's subscription;
+the provider process remains active until the final client disconnects.
+
+To open an existing session in another browser, use this handoff flow. The
+original client must already have the session token; the new browser does not
+need that token in its URL.
+
+1. The authorized client asks rterm to create a one-time handoff:
+
+   ```text
+   POST /api/sessions/{session}/share
+   Authorization: Bearer session-token
+   ```
+
+   The response contains a short-lived `handoff` value. The authorized client
+   passes that value, along with the session metadata, to the new browser by
+   opening this provider-page URL:
+
+   ```text
+   http://<host>/<prefix>/provider/<provider>?embed=1&attachSession=<session-id>&handoff=<handoff>&target=<target>&user=<user>&activeSession=<session-id>
+   ```
+
+2. The new browser loads that URL. The provider page sends the handoff to
+   `POST /api/sessions/{session}/handoff` and receives a session token.
+3. The provider page uses that token to connect the browser to the existing
+   provider process. The handoff is single-use; each additional browser must
+   receive a newly generated handoff.
 
 #### File transfers
 
