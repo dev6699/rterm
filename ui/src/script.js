@@ -372,6 +372,7 @@ async function setupProvider() {
                 const session = await create.json()
                 const providerSession = {
                     id: session.id,
+                    token: session.token,
                     target: session.target,
                     user: session.user,
                     state: 'connecting',
