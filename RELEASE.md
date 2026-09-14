@@ -1,6 +1,8 @@
 # Release 0.8.0
 ## Major Features and Improvements
 * Add one-time credential handoff for embedded sessions
+* Preserve the provider session token for browser file transfers.
+* Restrict embedded `postMessage` events to the configured exact parent origin.
 
 # Release 0.7.0
 ## Major Features and Improvements
