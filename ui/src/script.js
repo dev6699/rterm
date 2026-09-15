@@ -135,7 +135,7 @@ function closeProviderSession(session) {
     session.container?.remove()
     providerSessions.delete(session.id)
     if (eventsSocket?.readyState === WebSocket.OPEN)
-        eventsSocket.send(JSON.stringify({ type: 'close', sessionId: session.id }))
+        eventsSocket.send(JSON.stringify({ type: 'close', sessionId: session.id, token: session.token }))
     parentEvent('disconnected', { sessionId: session.id })
     if (session !== activeProviderSession) {
         socketToClose?.close()
@@ -147,14 +147,18 @@ function closeProviderSession(session) {
     socket = undefined
     terminal = undefined
     fitAddon = undefined
+    activateNextProviderSession()
+    socketToClose?.close()
+}
+
+function activateNextProviderSession() {
     const next = [...providerSessions.values()].filter((candidate) => candidate.state !== 'disconnected').at(-1)
     if (next) {
         activateProviderSession(next)
-    } else {
-        parentEvent('disconnected')
-        openNewSession()
+        return
     }
-    socketToClose?.close()
+    parentEvent('disconnected')
+    openNewSession()
 }
 
 function activateProviderSession(session, announce = true) {
@@ -186,7 +190,7 @@ function activateProviderSession(session, announce = true) {
         }
         if (announce) {
             if (eventsSocket?.readyState === WebSocket.OPEN)
-                eventsSocket.send(JSON.stringify({ type: 'select', sessionId: session.id }))
+                eventsSocket.send(JSON.stringify({ type: 'select', sessionId: session.id, token: session.token }))
         }
         parentEvent('authenticated')
     }
@@ -370,7 +374,7 @@ function connectEvents(session) {
                     closed.terminal?.dispose()
                     closed.container?.remove()
                     providerSessions.delete(closed.id)
-                    if (closed === activeProviderSession) openNewSession()
+                    if (closed === activeProviderSession) activateNextProviderSession()
                     else renderTabs()
                 }
                 return

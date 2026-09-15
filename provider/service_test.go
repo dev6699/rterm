@@ -485,20 +485,35 @@ func TestHandleEventsWebSocketAndSelection(t *testing.T) {
 	if err := conn.ReadJSON(&event); err != nil || event["type"] != "new-session" {
 		t.Fatalf("new event: %#v %v", event, err)
 	}
-	if err := conn.WriteJSON(map[string]string{"type": "close", "sessionId": "missing"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.WriteJSON(map[string]string{"type": "close", "sessionId": otherSession.ID}); err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.ReadJSON(&event); err != nil || event["type"] != "closed" || event["sessionId"] != otherSession.ID {
-		t.Fatalf("closed event: %#v %v", event, err)
-	}
 	if err := conn.WriteJSON(map[string]string{"type": "select", "sessionId": session.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.ReadJSON(&event); err != nil || event["type"] != "selected" {
 		t.Fatalf("selected event: %#v %v", event, err)
+	}
+	if err := conn.WriteJSON(map[string]string{"type": "select", "sessionId": otherSession.ID, "token": otherSession.Token}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.ReadJSON(&event); err != nil || event["type"] != "selected" || event["sessionId"] != otherSession.ID {
+		t.Fatalf("authorized selected event: %#v %v", event, err)
+	}
+	unauthorizedConn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unauthorizedConn.Close()
+	if err := unauthorizedConn.ReadJSON(&event); err != nil || event["type"] != "selected" {
+		t.Fatalf("unauthorized connection initial event: %#v %v", event, err)
+	}
+	if err := unauthorizedConn.WriteJSON(map[string]string{"type": "close", "sessionId": otherSession.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := unauthorizedConn.WriteJSON(map[string]string{"type": "select", "sessionId": otherSession.ID}); err != nil {
+		t.Fatal(err)
+	}
+	unauthorizedConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if err := unauthorizedConn.ReadJSON(&event); err == nil {
+		t.Fatalf("unauthorized session event: %#v", event)
 	}
 	if _, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/?session=missing&token=x", nil); err == nil {
 		t.Fatal("unauthorized websocket connected")
@@ -570,7 +585,7 @@ func TestSharedAgentReadVariantsAndReadLoopShutdown(t *testing.T) {
 
 func TestServiceDirectErrorBranches(t *testing.T) {
 	service, session := testService(t)
-	service.selectSession(session.ID, "missing")
+	service.selectSession(&eventClient{sessionID: session.ID, authorizedSessions: map[string]struct{}{session.ID: {}}}, "missing", "")
 	if got := service.outputSince(session.ID, 999999); got != service.output[session.ID] {
 		t.Fatal("outputSince did not handle an oversized offset")
 	}

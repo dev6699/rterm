@@ -76,8 +76,9 @@ type Service struct {
 }
 
 type eventClient struct {
-	sessionID string
-	writeMu   sync.Mutex
+	sessionID          string
+	authorizedSessions map[string]struct{}
+	writeMu            sync.Mutex
 }
 
 // NewService creates a provider service from config.
@@ -101,7 +102,10 @@ func (s *Service) HandleEventsWebSocket(upgrader *websocket.Upgrader, w http.Res
 		return
 	}
 	s.mu.Lock()
-	client := &eventClient{sessionID: sessionID}
+	client := &eventClient{
+		sessionID:          sessionID,
+		authorizedSessions: map[string]struct{}{sessionID: {}},
+	}
 	s.events[conn] = client
 	s.mu.Unlock()
 	defer func() {
@@ -119,6 +123,7 @@ func (s *Service) HandleEventsWebSocket(upgrader *websocket.Upgrader, w http.Res
 		var message struct {
 			Type      string `json:"type"`
 			SessionID string `json:"sessionId"`
+			Token     string `json:"token"`
 		}
 		if err := conn.ReadJSON(&message); err != nil {
 			return
@@ -127,11 +132,11 @@ func (s *Service) HandleEventsWebSocket(upgrader *websocket.Upgrader, w http.Res
 		case "new-session":
 			s.broadcastEvent(sessionID, map[string]any{"type": "new-session"})
 		case "close":
-			if _, ok := s.Session(message.SessionID); ok {
+			if s.authorizeEventSession(client, message.SessionID, message.Token) {
 				s.broadcastEvent(sessionID, map[string]any{"type": "closed", "sessionId": message.SessionID})
 			}
 		case "select":
-			s.selectSession(sessionID, message.SessionID)
+			s.selectSession(client, message.SessionID, message.Token)
 		}
 	}
 }
@@ -158,11 +163,22 @@ func (s *Service) broadcastEvent(sessionID string, message any) {
 	}
 }
 
-func (s *Service) selectSession(authorizedSessionID, sessionID string) {
-	if _, ok := s.Session(sessionID); !ok {
+func (s *Service) selectSession(client *eventClient, sessionID, token string) {
+	if !s.authorizeEventSession(client, sessionID, token) {
 		return
 	}
-	s.broadcastEvent(authorizedSessionID, map[string]any{"type": "selected", "sessionId": sessionID})
+	s.broadcastEvent(client.sessionID, map[string]any{"type": "selected", "sessionId": sessionID})
+}
+
+func (s *Service) authorizeEventSession(client *eventClient, sessionID, token string) bool {
+	if _, ok := client.authorizedSessions[sessionID]; ok {
+		return true
+	}
+	if !s.authorizeSessionToken(sessionID, token) {
+		return false
+	}
+	client.authorizedSessions[sessionID] = struct{}{}
+	return true
 }
 
 type sharedAgent struct {
@@ -377,15 +393,16 @@ func (s *Service) CreateSession(ctx context.Context, profileName string, request
 
 // AuthorizeSession verifies a bearer token for a session request.
 func (s *Service) AuthorizeSession(r *http.Request, sessionID string) bool {
-	session, ok := s.Session(sessionID)
-	if !ok {
-		return false
-	}
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if token == r.Header.Get("Authorization") && strings.HasSuffix(r.URL.Path, "/ws") {
 		token = r.URL.Query().Get("token")
 	}
-	return token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(session.Token)) == 1
+	return s.authorizeSessionToken(sessionID, token)
+}
+
+func (s *Service) authorizeSessionToken(sessionID, token string) bool {
+	session, ok := s.Session(sessionID)
+	return ok && token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(session.Token)) == 1
 }
 
 // AttachTerminal associates a running TTY with an existing session.
