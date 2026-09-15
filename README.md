@@ -87,6 +87,11 @@ messaging. The page includes the token in parent events and requires it on
 parent messages. Hosts should validate the message source and token before
 accepting events.
 
+Hosts must also provide a `parentOrigin` query parameter containing the exact
+origin of the embedding page. Parent events are sent to that origin and
+messages from other origins are rejected. This is required for Electron hosts
+as well as browser hosts; do not use `*` as the target origin.
+
 When an embedded provider page is hosted by another application, the
 parent-session bridge can be limited to session discovery and tab selection.
 The parent sends:

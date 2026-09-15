@@ -14,16 +14,17 @@ const providerName = providerMatch ? decodeURIComponent(providerMatch[1]) : ''
 const providerPrefix = providerMatch ? window.location.pathname.slice(0, providerMatch.index) : ''
 const providerApiPrefix = `${providerPrefix}/api`
 const bridgeToken = new URLSearchParams(window.location.search).get('bridgeToken') || ''
+const parentOrigin = new URLSearchParams(window.location.search).get('parentOrigin') || ''
 const roomId = new URLSearchParams(window.location.search).get('roomId') || ''
 document.body.classList.toggle('embedded', embedded)
 document.documentElement.classList.toggle('provider-page', Boolean(providerName))
 
 function parentEvent(type, data = {}) {
-    if (!embedded || window.parent === window || !bridgeToken)
+    if (!embedded || window.parent === window || !bridgeToken || !parentOrigin)
         return
     window.parent.postMessage(
         { source: 'rterm', type, ...(bridgeToken ? { bridgeToken } : {}), ...data },
-        '*',
+        parentOrigin,
     )
 }
 
@@ -738,7 +739,7 @@ function handleSessionsRequest(request) {
 }
 
 window.addEventListener('message', (event) => {
-    if (!embedded || event.source !== window.parent || !event.data || event.data.bridgeToken !== bridgeToken)
+    if (!embedded || event.source !== window.parent || event.origin !== parentOrigin || !event.data || event.data.bridgeToken !== bridgeToken)
         return
     switch (event.data.type) {
         case 'sessions-request':
