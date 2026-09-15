@@ -13,20 +13,20 @@ const providerMatch = window.location.pathname.match(/\/provider\/([^/]+)\/?$/)
 const providerName = providerMatch ? decodeURIComponent(providerMatch[1]) : ''
 const providerPrefix = providerMatch ? window.location.pathname.slice(0, providerMatch.index) : ''
 const providerApiPrefix = `${providerPrefix}/api`
-const parentOrigin = new URLSearchParams(window.location.search).get('parentOrigin')
-let trustedParentOrigin = ''
-try {
-    if (parentOrigin && new URL(parentOrigin).origin === parentOrigin) trustedParentOrigin = parentOrigin
-} catch (_) {
-    // Ignore an invalid or unconfigured parent origin.
-}
+const bridgeToken = new URLSearchParams(window.location.search).get('bridgeToken') || ''
+const roomId = new URLSearchParams(window.location.search).get('roomId') || ''
 document.body.classList.toggle('embedded', embedded)
 document.documentElement.classList.toggle('provider-page', Boolean(providerName))
 
 function parentEvent(type, data = {}) {
-    if (!embedded || window.parent === window || !trustedParentOrigin) return
-    window.parent.postMessage({ source: 'rterm', type, ...data }, trustedParentOrigin)
+    if (!embedded || window.parent === window || !bridgeToken)
+        return
+    window.parent.postMessage(
+        { source: 'rterm', type, ...(bridgeToken ? { bridgeToken } : {}), ...data },
+        '*',
+    )
 }
+
 
 function sendSocket(message) {
     if (parentBridge && !providerName) {
@@ -58,13 +58,15 @@ const providerSessions = new Map()
 let activeProviderSession
 let selectingNewSession = false
 let eventsSocket
+const pendingEvents = []
+let lastEventSequence = 0
 let transferHandlersReady = false
 const tabsElement = document.getElementById('session-tabs')
 const newSessionButton = document.getElementById('new-session')
 
-function showTerminal(session) {
+function showTerminal(session, announce = true) {
     if (session?.terminal) {
-        activateProviderSession(session)
+        activateProviderSession(session, announce)
         return
     }
     if (session) socket = session.socket
@@ -98,7 +100,7 @@ function showTerminal(session) {
         sendSocket(MSG_RESIZE_TERMINAL + JSON.stringify(data))
         parentEvent('terminal-resized', data)
     })
-    if (session) activateProviderSession(session)
+    if (session) activateProviderSession(session, announce)
 }
 
 function renderTabs() {
@@ -106,6 +108,7 @@ function renderTabs() {
     tabsElement.style.display = providerSessions.size ? 'flex' : 'none'
     if (newSessionButton) newSessionButton.classList.toggle('active', !activeProviderSession)
     for (const button of [...tabsElement.querySelectorAll('.session-tab')]) button.remove()
+    const tabs = document.createDocumentFragment()
     for (const session of providerSessions.values()) {
         const tab = document.createElement('div')
         tab.className = 'session-tab'
@@ -123,8 +126,10 @@ function renderTabs() {
         close.setAttribute('aria-label', `Close ${session.user}@${session.target}`)
         close.addEventListener('click', () => closeProviderSession(session))
         tab.append(select, close)
-        tabsElement.insertBefore(tab, newSessionButton)
+        tabs.append(tab)
     }
+    if (newSessionButton) tabsElement.insertBefore(tabs, newSessionButton)
+    else tabsElement.append(tabs)
 }
 
 function closeProviderSession(session) {
@@ -134,8 +139,7 @@ function closeProviderSession(session) {
     session.terminal?.dispose()
     session.container?.remove()
     providerSessions.delete(session.id)
-    if (eventsSocket?.readyState === WebSocket.OPEN)
-        eventsSocket.send(JSON.stringify({ type: 'close', sessionId: session.id, token: session.token }))
+    sendRoomEvent({ type: 'close', sessionId: session.id, token: session.token })
     parentEvent('disconnected', { sessionId: session.id })
     if (session !== activeProviderSession) {
         socketToClose?.close()
@@ -147,14 +151,14 @@ function closeProviderSession(session) {
     socket = undefined
     terminal = undefined
     fitAddon = undefined
-    activateNextProviderSession()
+    activateNextProviderSession(false)
     socketToClose?.close()
 }
 
-function activateNextProviderSession() {
+function activateNextProviderSession(announce = true) {
     const next = [...providerSessions.values()].filter((candidate) => candidate.state !== 'disconnected').at(-1)
     if (next) {
-        activateProviderSession(next)
+        activateProviderSession(next, announce)
         return
     }
     parentEvent('disconnected')
@@ -177,20 +181,8 @@ function activateProviderSession(session, announce = true) {
         document.body.classList.add('terminal-active')
         document.documentElement.classList.add('terminal-active')
         setupTransfers()
-        if (session.handoff) {
-            parentEvent('session-ready', {
-                sessionId: session.id,
-                handoff: session.handoff,
-                provider: providerName,
-                target: session.target,
-                user: session.user,
-            })
-        } else if (announce) {
-            parentEvent('session-selected', { sessionId: session.id })
-        }
         if (announce) {
-            if (eventsSocket?.readyState === WebSocket.OPEN)
-                eventsSocket.send(JSON.stringify({ type: 'select', sessionId: session.id, token: session.token }))
+            sendRoomEvent({ type: 'select', sessionId: session.id, token: session.token })
         }
         parentEvent('authenticated')
     }
@@ -200,8 +192,7 @@ function activateProviderSession(session, announce = true) {
 function openNewSession(announce = false) {
     if (selectingNewSession) return
     selectingNewSession = true
-    if (announce && eventsSocket?.readyState === WebSocket.OPEN)
-        eventsSocket.send(JSON.stringify({ type: 'new-session' }))
+    if (announce) sendRoomEvent({ type: 'new-session' })
     activeProviderSession = undefined
     activeSessionId = ''
     socket = undefined
@@ -240,68 +231,11 @@ function syncProviderSessions(sessions, activeSessionId) {
     if (active && active !== activeProviderSession) activateProviderSession(active, false)
 }
 
-async function attachSharedSession() {
-    const query = new URLSearchParams(window.location.search)
-    const sessionIds = query.getAll('attachSession')
-    const handoffs = query.getAll('handoff')
-    if (!providerName || !sessionIds.length || sessionIds.length !== handoffs.length) return false
-    try {
-        for (let index = 0; index < sessionIds.length; index++) {
-            const sessionId = sessionIds[index]
-            const response = await fetch(`${providerApiPrefix}/sessions/${encodeURIComponent(sessionId)}/handoff`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ handoff: handoffs[index] }),
-            })
-            if (!response.ok) throw new Error(await response.text())
-            const result = await response.json()
-            const providerSession = {
-                id: sessionId,
-                token: result.token,
-                target: query.getAll('target')[index] || sessionId,
-                user: query.getAll('user')[index] || '',
-                state: 'connecting',
-                socket: undefined,
-                terminal: undefined,
-                fitAddon: undefined,
-                container: undefined,
-            }
-            providerSessions.set(providerSession.id, providerSession)
-            const sessionPath = `${providerApiPrefix}/sessions/${encodeURIComponent(sessionId)}/ws`
-            attachSocket(
-                `${wsProtocol}${wsHost}${wsPort}${sessionPath}?token=${encodeURIComponent(result.token)}`,
-                providerSession,
-            )
-        }
-        const active = providerSessions.get(query.get('activeSession')) || [...providerSessions.values()][0]
-        if (active) {
-            selectingNewSession = false
-            activeProviderSession = active
-            activeSessionId = active.id
-            showTerminal(active)
-            providerElement.style.display = 'none'
-            setupTransfers()
-        }
-        renderTabs()
-        return true
-    } catch (error) {
-        document.getElementById('provider-error').textContent = error instanceof Error ? error.message : String(error)
-        return false
-    }
-}
-
-async function attachSessionByHandoff(sessionId, handoff, target, user, activate) {
-    if (!providerName || !sessionId || !handoff || providerSessions.has(sessionId)) return
-    const response = await fetch(`${providerApiPrefix}/sessions/${encodeURIComponent(sessionId)}/handoff`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ handoff }),
-    })
-    if (!response.ok) throw new Error(await response.text())
-    const result = await response.json()
+function attachSessionByToken(sessionId, token, target, user, activate) {
+    if (!providerName || !sessionId || !token || providerSessions.has(sessionId)) return
     const providerSession = {
         id: sessionId,
-        token: result.token,
+        token,
         target: target || sessionId,
         user: user || '',
         state: 'connecting',
@@ -310,17 +244,17 @@ async function attachSessionByHandoff(sessionId, handoff, target, user, activate
         fitAddon: undefined,
         container: undefined,
     }
-    providerSessions.set(providerSession.id, providerSession)
+    providerSessions.set(sessionId, providerSession)
     const sessionPath = `${providerApiPrefix}/sessions/${encodeURIComponent(sessionId)}/ws`
     attachSocket(
-        `${wsProtocol}${wsHost}${wsPort}${sessionPath}?token=${encodeURIComponent(result.token)}`,
+        `${wsProtocol}${wsHost}${wsPort}${sessionPath}?token=${encodeURIComponent(token)}`,
         providerSession,
     )
     if (activate) {
         selectingNewSession = false
         activeProviderSession = providerSession
-        activeSessionId = providerSession.id
-        showTerminal(providerSession)
+        activeSessionId = sessionId
+        showTerminal(providerSession, false)
         providerElement.style.display = 'none'
         setupTransfers()
     }
@@ -353,13 +287,42 @@ function attachSocket(url, session) {
     connection.addEventListener('error', () => handleSocketError(session, connection))
 }
 
+function sendRoomEvent(event) {
+    const message = JSON.stringify(event)
+    if (eventsSocket?.readyState === WebSocket.OPEN) {
+        eventsSocket.send(message)
+    } else if (eventsSocket?.readyState === WebSocket.CONNECTING || !eventsSocket) {
+        pendingEvents.push(message)
+    }
+}
+
 function connectEvents(session) {
-    const eventsPath = `${providerPrefix}/api/events/ws?session=${encodeURIComponent(session.id)}&token=${encodeURIComponent(session.token)}`
+    console.log('[rterm-frame] connect-events', { sessionId: session.id })
+    if (!roomId) return
+    const eventsPath = `${providerPrefix}/api/events/ws?roomId=${encodeURIComponent(roomId)}`
     eventsSocket = new WebSocket(`${wsProtocol}${wsHost}${wsPort}${eventsPath}`)
+    eventsSocket.addEventListener('open', () => {
+        for (const message of pendingEvents.splice(0)) eventsSocket.send(message)
+    })
     eventsSocket.addEventListener('message', (event) => {
         try {
             const message = JSON.parse(event.data)
+            if (Number.isInteger(message.sequence)) {
+                if (message.sequence <= lastEventSequence) return
+                lastEventSequence = message.sequence
+            }
+            console.log('[rterm-frame] event', {
+                type: message.type,
+                sessionId: typeof message.sessionId === 'string' ? message.sessionId : undefined,
+                sequence: Number.isInteger(message.sequence) ? message.sequence : undefined,
+            })
             if (message.type === 'new-session') {
+                if (typeof message.sessionId === 'string' && typeof message.token === 'string') {
+                    const existing = providerSessions.get(message.sessionId)
+                    if (existing) activateProviderSession(existing, false)
+                    else attachSessionByToken(message.sessionId, message.token, message.target, message.user, true)
+                    return
+                }
                 // The initiating view already opened the form locally. Other attached
                 // views should follow the new-session selection.
                 if (!selectingNewSession) openNewSession()
@@ -374,14 +337,19 @@ function connectEvents(session) {
                     closed.terminal?.dispose()
                     closed.container?.remove()
                     providerSessions.delete(closed.id)
-                    if (closed === activeProviderSession) activateNextProviderSession()
+                    if (closed === activeProviderSession) activateNextProviderSession(false)
                     else renderTabs()
                 }
                 return
             }
             if (message.type !== 'selected' || typeof message.sessionId !== 'string') return
-            if (selectingNewSession) return
             const selected = providerSessions.get(message.sessionId)
+            console.log('[rterm-frame] selected lookup', {
+                sessionId: message.sessionId,
+                found: Boolean(selected),
+                knownSessionIds: [...providerSessions.keys()],
+                selectingNewSession,
+            })
             if (selected) activateProviderSession(selected, false)
         } catch (_) {
             // Ignore malformed synchronization messages.
@@ -397,7 +365,8 @@ function handleSocketMessage(event, session) {
 
     switch (message) {
         case MSG_AUTH:
-            if (session && session !== activeProviderSession) return
+            if (session) session.state = 'authenticating'
+            if (session && session !== activeProviderSession) break
             authElement.style.display = 'flex'
             document.getElementById('digit1').focus()
             parentEvent('authentication-required')
@@ -406,7 +375,9 @@ function handleSocketMessage(event, session) {
         case MSG_AUTH_OK:
             if (session) session.state = 'connected'
             authElement.style.display = 'none'
-            showTerminal(session)
+            // Authentication is an automatic socket lifecycle event; it must
+            // not re-announce a background session as a user selection.
+            showTerminal(session, false)
             if (!session || session === activeProviderSession) parentEvent('authenticated')
             break
 
@@ -551,10 +522,10 @@ async function setupProvider() {
                 connectButton.disabled = true
                 errorElement.textContent = ''
                 const create = await fetch(
-                    `${providerApiPrefix}/providers/${encodeURIComponent(providerName)}/sessions`,
+                    `${providerApiPrefix}/providers/${encodeURIComponent(providerName)}/sessions${roomId ? `?roomId=${encodeURIComponent(roomId)}` : ''}`,
                     {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'X-Rterm-Handoff': '1' },
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ target: targetSelect.value, user: userSelect.value }),
                     },
                 )
@@ -575,10 +546,10 @@ async function setupProvider() {
                 activeProviderSession = providerSession
                 activeSessionId = providerSession.id
                 renderTabs()
-                parentEvent('session-ready', {
+                sendRoomEvent({
+                    type: 'new-session',
                     sessionId: session.id,
-                    handoff: session.handoff,
-                    provider: providerName,
+                    token: session.token,
                     target: session.target,
                     user: session.user,
                 })
@@ -747,9 +718,32 @@ function submitCode() {
     sendSocket(MSG_AUTH_TRY + code)
 }
 
+function handleSessionsRequest(request) {
+    const requestId = typeof request.requestId === 'string' ? request.requestId : ''
+    if (!requestId) return
+    const respond = (ok, result, error) => parentEvent('sessions-response', {
+        requestId,
+        ok,
+        connected: [...providerSessions.values()].some((candidate) => candidate.state === 'connected'),
+        result,
+        error,
+    })
+    respond(true, [...providerSessions.values()].map((candidate) => ({
+            sessionId: candidate.id,
+            token: candidate.token,
+            provider: providerName,
+            target: candidate.target,
+            user: candidate.user,
+    })))
+}
+
 window.addEventListener('message', (event) => {
-    if (!embedded || event.source !== window.parent || event.origin !== trustedParentOrigin || !event.data) return
+    if (!embedded || event.source !== window.parent || !event.data || event.data.bridgeToken !== bridgeToken)
+        return
     switch (event.data.type) {
+        case 'sessions-request':
+            handleSessionsRequest(event.data)
+            break
         case 'connected':
             break
         case 'authentication-required':
@@ -800,20 +794,6 @@ window.addEventListener('message', (event) => {
                 if (session) activateProviderSession(session)
             }
             break
-        case 'sync-sessions':
-            if (providerName) syncProviderSessions(event.data.sessions, event.data.activeSessionId)
-            break
-        case 'attach-session':
-            if (providerName && typeof event.data.sessionId === 'string' && typeof event.data.handoff === 'string') {
-                void attachSessionByHandoff(
-                    event.data.sessionId,
-                    event.data.handoff,
-                    event.data.target,
-                    event.data.user,
-                    event.data.active === true,
-                )
-            }
-            break
         case 'write':
             if (typeof event.data.input === 'string') sendSocket(MSG_INPUT + event.data.input)
             break
@@ -829,7 +809,7 @@ window.addEventListener('message', (event) => {
 })
 
 parentEvent('loaded')
-void attachSharedSession()
+if (providerName && roomId) connectEvents({ id: '', token: '' })
 
 function clearDigits() {
     for (let i = 1; i <= 6; i++) {

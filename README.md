@@ -82,16 +82,43 @@ notifies its parent with `postMessage` events using `{ source: "rterm" }`.
 The parent may send `{ type: "write", input }`,
 `authenticate`, or `resize` messages to control the session.
 
-Embedded pages must also receive the exact trusted parent origin through the
-`parentOrigin` query parameter, for example:
+Embedded pages use a per-embed `bridgeToken` query parameter for parent
+messaging. The page includes the token in parent events and requires it on
+parent messages. Hosts should validate the message source and token before
+accepting events.
 
-```text
-?embed=1&parentOrigin=https%3A%2F%2Fconsole.example
+When an embedded provider page is hosted by another application, the
+parent-session bridge can be limited to session discovery and tab selection.
+The parent sends:
+
+```json
+{ "type": "sessions-request", "requestId": "call-1" }
+{ "type": "select-session", "sessionId": "session-id" }
 ```
 
-The page sends events only to that origin. If `parentOrigin` is missing,
-invalid, or not an exact origin, no parent events are sent. Hosts should also
-validate the message source and `event.origin` before accepting events.
+The provider page responds to a session request with metadata and the
+session-scoped token needed by the trusted embedding host:
+
+```json
+{
+  "source": "rterm",
+  "type": "sessions-response",
+  "requestId": "call-1",
+  "ok": true,
+  "result": [{
+    "sessionId": "session-id",
+    "token": "session-token",
+    "provider": "ssh",
+    "target": "node-1",
+    "user": "ubuntu"
+  }]
+}
+```
+
+The parent must validate the exact iframe origin and message source. The
+embedding host decides how to retain the token and call the session HTTP
+endpoints. Provider operations do not require a generic parent `tool-request`
+message.
 
 For a host that owns the WebSocket connection, use `?embed=1&bridge=parent`.
 In bridge mode the rterm page renders the terminal but forwards input,
@@ -162,13 +189,6 @@ The token is required for every session operation. HTTP requests use:
 Authorization: Bearer session-token
 ```
 
-Embedded provider pages request `X-Rterm-Handoff: 1` when creating a session.
-The response includes a one-time `handoff` value in addition to the token used
-by the provider page itself. The page sends only the handoff value and session
-metadata to its host. A trusted host exchanges that value at
-`POST /api/sessions/{session}/handoff` to obtain the token without forwarding
-it through the host page.
-
 Session operations are:
 
 ```text
@@ -177,8 +197,6 @@ POST /api/sessions/{session}/execute
 POST /api/sessions/{session}/upload?path=/remote/file[&filename=file]
 GET  /api/sessions/{session}/download?path=/remote/file
 GET  /api/sessions/{session}/ws?token=session-token
-POST /api/sessions/{session}/share
-POST /api/sessions/{session}/handoff
 ```
 
 The WebSocket query token is supported because browser WebSocket connections
@@ -186,38 +204,27 @@ cannot set arbitrary authorization headers. A session ID alone is not a
 credential. The provider page may keep multiple sessions open in tabs; each
 tab has its own terminal, connection, token, and transfer state.
 
-#### Shared provider sessions
+#### Room-based shared sessions
 
-Multiple authorized WebSocket clients can connect to the same provider session.
-They share one underlying provider process, and output from that process is
-broadcast to every connected client. Writes and terminal resizes are serialized
-against each other. Closing one client removes only that client's subscription;
-the provider process remains active until the final client disconnects.
+Embedded provider pages can share session state by using the same private,
+unguessable `roomId` capability:
 
-To open an existing session in another browser, use this handoff flow. The
-original client must already have the session token; the new browser does not
-need that token in its URL.
+```text
+http://<host>/<prefix>/provider/<provider>?embed=1&roomId=<room-id>
+```
 
-1. The authorized client asks rterm to create a one-time handoff:
+Each page opens a room-scoped event WebSocket at
+`/api/events/ws?roomId=<room-id>`. Session creation, selection, and closure
+are synchronized to the other pages in that room. A newly created session is
+attached to the room, and the provider page opens its own authenticated
+terminal WebSocket for that session. Multiple pages therefore share the room's
+session list and selected tab while retaining their own terminal connections.
 
-   ```text
-   POST /api/sessions/{session}/share
-   Authorization: Bearer session-token
-   ```
-
-   The response contains a short-lived `handoff` value. The authorized client
-   passes that value, along with the session metadata, to the new browser by
-   opening this provider-page URL:
-
-   ```text
-   http://<host>/<prefix>/provider/<provider>?embed=1&attachSession=<session-id>&handoff=<handoff>&target=<target>&user=<user>&activeSession=<session-id>
-   ```
-
-2. The new browser loads that URL. The provider page sends the handoff to
-   `POST /api/sessions/{session}/handoff` and receives a session token.
-3. The provider page uses that token to connect the browser to the existing
-   provider process. The handoff is single-use; each additional browser must
-   receive a newly generated handoff.
+The room event stream carries `new-session`, `selected`, and `closed` events.
+Clients must still validate the configured parent origin for iframe messages.
+The `roomId` grants access to the room's session metadata and tokens; hosts
+must generate it with sufficient randomness and must not expose or reuse it
+across unrelated rooms.
 
 #### File transfers
 

@@ -29,6 +29,16 @@ type TTY struct {
 	onOutput             func([]byte)
 }
 
+// Close closes the connected agent, if one exists.
+func (t *TTY) Close() error {
+	if agent := t.currentAgent(); agent != nil {
+		if closer, ok := agent.(io.Closer); ok {
+			return closer.Close()
+		}
+	}
+	return nil
+}
+
 func New(controller Controller, agentFactory AgentFactory, agentBufferSize int, controllerBufferSize int) *TTY {
 	return &TTY{
 		controller:           controller,
@@ -69,11 +79,7 @@ func (t *TTY) Run(ctx context.Context) error {
 		return err
 	}
 	defer func() {
-		if agent := t.currentAgent(); agent != nil {
-			if closer, ok := agent.(io.Closer); ok {
-				_ = closer.Close()
-			}
-		}
+		_ = t.Close()
 	}()
 
 	errCh := make(chan error, 2)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -28,7 +29,7 @@ type Session struct {
 	Target   string `json:"target"`
 	User     string `json:"user"`
 	Token    string `json:"token,omitempty"`
-	Handoff  string `json:"handoff,omitempty"`
+	RoomID   string `json:"-"`
 }
 
 func newToken() string {
@@ -56,29 +57,29 @@ type SessionRequest struct {
 	User   string `json:"user"`
 }
 
-type sessionHandoff struct {
-	sessionID string
-	token     string
-	expiresAt time.Time
-}
-
 // Service manages provider sessions, terminal output, transfers, and events.
 type Service struct {
-	profiles  map[string]Profile
-	sessions  map[string]Session
-	mu        sync.RWMutex
-	output    map[string]string
-	terminals map[string]*tty.TTY
-	executeMu map[string]*sync.Mutex
-	handoffs  map[string]sessionHandoff
-	agents    map[string]*sharedAgent
-	events    map[*websocket.Conn]*eventClient
+	profiles     map[string]Profile
+	sessions     map[string]Session
+	mu           sync.RWMutex
+	output       map[string]string
+	terminals    map[string]*tty.TTY
+	executeMu    map[string]*sync.Mutex
+	agents       map[string]*sharedAgent
+	events       map[*websocket.Conn]*eventClient
+	eventSeq     uint64
+	activeRooms  map[string]string
+	lastActivity map[string]time.Time
 }
 
+const sessionTTL = 30 * time.Minute
+
 type eventClient struct {
-	sessionID          string
+	roomID             string
 	authorizedSessions map[string]struct{}
 	writeMu            sync.Mutex
+	initializing       bool
+	pending            []any
 }
 
 // NewService creates a provider service from config.
@@ -87,13 +88,88 @@ func NewService(config Config) *Service {
 	for _, profile := range config.Providers {
 		profiles[profile.Name] = profile
 	}
-	return &Service{profiles: profiles, sessions: make(map[string]Session), output: make(map[string]string), terminals: make(map[string]*tty.TTY), executeMu: make(map[string]*sync.Mutex), handoffs: make(map[string]sessionHandoff), agents: make(map[string]*sharedAgent), events: make(map[*websocket.Conn]*eventClient)}
+	service := &Service{profiles: profiles, sessions: make(map[string]Session), output: make(map[string]string), terminals: make(map[string]*tty.TTY), executeMu: make(map[string]*sync.Mutex), agents: make(map[string]*sharedAgent), events: make(map[*websocket.Conn]*eventClient), activeRooms: make(map[string]string), lastActivity: make(map[string]time.Time)}
+	go service.expireSessions()
+	return service
+}
+
+func (s *Service) expireSessions() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for now := range ticker.C {
+		expired := make([]struct {
+			id, room string
+			terminal *tty.TTY
+			agent    *sharedAgent
+		}, 0)
+		s.mu.Lock()
+		for id, lastActivity := range s.lastActivity {
+			if now.Sub(lastActivity) < sessionTTL {
+				continue
+			}
+			session, ok := s.sessions[id]
+			if !ok {
+				delete(s.lastActivity, id)
+				continue
+			}
+			delete(s.sessions, id)
+			delete(s.output, id)
+			terminal := s.terminals[id]
+			delete(s.terminals, id)
+			delete(s.executeMu, id)
+			agent := s.agents[id]
+			delete(s.agents, id)
+			delete(s.lastActivity, id)
+			if s.activeRooms[session.RoomID] == id {
+				delete(s.activeRooms, session.RoomID)
+			}
+			expired = append(expired, struct {
+				id, room string
+				terminal *tty.TTY
+				agent    *sharedAgent
+			}{id, session.RoomID, terminal, agent})
+		}
+		for _, item := range expired {
+			if s.activeRooms[item.room] == "" {
+				for id, session := range s.sessions {
+					if session.RoomID == item.room {
+						s.activeRooms[item.room] = id
+						break
+					}
+				}
+			}
+		}
+		s.mu.Unlock()
+		for _, item := range expired {
+			log.Printf("provider events: session expired room=%q target=%q", item.room, item.id)
+			if item.terminal != nil {
+				_ = item.terminal.Close()
+			}
+			if item.agent != nil {
+				item.agent.close()
+			}
+			if item.room == "" {
+				continue
+			}
+			s.broadcastEvent(item.room, map[string]any{"type": "closed", "sessionId": item.id})
+			if activeID := s.activeRoom(item.room); activeID != "" {
+				s.broadcastEvent(item.room, map[string]any{"type": "selected", "sessionId": activeID})
+			}
+		}
+	}
+}
+
+func (s *Service) activeRoom(roomID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.activeRooms[roomID]
 }
 
 // HandleEventsWebSocket upgrades an authorized request and serves session events.
 func (s *Service) HandleEventsWebSocket(upgrader *websocket.Upgrader, w http.ResponseWriter, r *http.Request) {
-	sessionID := r.URL.Query().Get("session")
-	if sessionID == "" || !s.AuthorizeSession(r, sessionID) {
+	roomID := r.URL.Query().Get("roomId")
+	if roomID == "" {
+		log.Printf("provider events: websocket rejected room=%q", roomID)
 		http.Error(w, "unauthorized session", http.StatusUnauthorized)
 		return
 	}
@@ -103,11 +179,56 @@ func (s *Service) HandleEventsWebSocket(upgrader *websocket.Upgrader, w http.Res
 	}
 	s.mu.Lock()
 	client := &eventClient{
-		sessionID:          sessionID,
-		authorizedSessions: map[string]struct{}{sessionID: {}},
+		roomID:             roomID,
+		authorizedSessions: make(map[string]struct{}),
+		initializing:       true,
+	}
+	initialEvents := make([]map[string]any, 0)
+	ids := make([]string, 0)
+	for id, session := range s.sessions {
+		if session.RoomID == roomID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		session := s.sessions[id]
+		s.eventSeq++
+		initialEvents = append(initialEvents, map[string]any{
+			"type": "new-session", "sessionId": session.ID, "token": session.Token,
+			"target": session.Target, "user": session.User, "sequence": s.eventSeq,
+		})
+	}
+	activeID := s.activeRooms[roomID]
+	if activeID == "" && len(ids) > 0 {
+		activeID = ids[len(ids)-1]
+		s.activeRooms[roomID] = activeID
+	}
+	if activeID != "" {
+		s.eventSeq++
+		initialEvents = append(initialEvents, map[string]any{"type": "selected", "sessionId": activeID, "sequence": s.eventSeq})
 	}
 	s.events[conn] = client
 	s.mu.Unlock()
+	log.Printf("provider events: websocket authorized room=%q", roomID)
+	for _, event := range initialEvents {
+		client.writeMu.Lock()
+		_ = conn.WriteJSON(event)
+		client.writeMu.Unlock()
+	}
+	// Broadcasts that occurred while the initial snapshot was being written are
+	// queued by broadcastEvent. Acquire the write lock before making the client
+	// ready so a later broadcast cannot overtake the queued events.
+	client.writeMu.Lock()
+	s.mu.Lock()
+	client.initializing = false
+	pendingEvents := client.pending
+	client.pending = nil
+	s.mu.Unlock()
+	for _, event := range pendingEvents {
+		_ = conn.WriteJSON(event)
+	}
+	client.writeMu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		delete(s.events, conn)
@@ -116,39 +237,89 @@ func (s *Service) HandleEventsWebSocket(upgrader *websocket.Upgrader, w http.Res
 		_ = conn.Close()
 		client.writeMu.Unlock()
 	}()
-	client.writeMu.Lock()
-	_ = conn.WriteJSON(map[string]any{"type": "selected", "sessionId": sessionID})
-	client.writeMu.Unlock()
 	for {
 		var message struct {
 			Type      string `json:"type"`
 			SessionID string `json:"sessionId"`
 			Token     string `json:"token"`
+			Target    string `json:"target"`
+			User      string `json:"user"`
 		}
 		if err := conn.ReadJSON(&message); err != nil {
 			return
 		}
 		switch message.Type {
 		case "new-session":
-			s.broadcastEvent(sessionID, map[string]any{"type": "new-session"})
+			log.Printf("provider events: new-session room=%q", roomID)
+			event := map[string]any{"type": "new-session"}
+			if message.SessionID != "" && s.authorizeEventSession(client, message.SessionID, message.Token) {
+				event["sessionId"] = message.SessionID
+				event["token"] = message.Token
+				event["target"] = message.Target
+				event["user"] = message.User
+			}
+			s.broadcastEvent(roomID, event)
+			if message.SessionID != "" {
+				s.selectSession(client, message.SessionID, message.Token)
+			}
 		case "close":
-			if s.authorizeEventSession(client, message.SessionID, message.Token) {
-				s.broadcastEvent(sessionID, map[string]any{"type": "closed", "sessionId": message.SessionID})
+			allowed := s.authorizeEventSession(client, message.SessionID, message.Token)
+			log.Printf("provider events: close room=%q target=%q tokenProvided=%t allowed=%t", roomID, message.SessionID, message.Token != "", allowed)
+			if allowed {
+				s.mu.Lock()
+				terminal := s.terminals[message.SessionID]
+				agent := s.agents[message.SessionID]
+				delete(s.sessions, message.SessionID)
+				delete(s.output, message.SessionID)
+				delete(s.terminals, message.SessionID)
+				delete(s.agents, message.SessionID)
+				delete(s.executeMu, message.SessionID)
+				delete(s.lastActivity, message.SessionID)
+				if s.activeRooms[roomID] == message.SessionID {
+					delete(s.activeRooms, roomID)
+					for id, session := range s.sessions {
+						if id != message.SessionID && session.RoomID == roomID {
+							s.activeRooms[roomID] = id
+							break
+						}
+					}
+				}
+				fallback := s.activeRooms[roomID]
+				s.mu.Unlock()
+				if terminal != nil {
+					_ = terminal.Close()
+				}
+				if agent != nil {
+					agent.close()
+				}
+				s.broadcastEvent(roomID, map[string]any{"type": "closed", "sessionId": message.SessionID})
+				if fallback != "" {
+					s.broadcastEvent(roomID, map[string]any{"type": "selected", "sessionId": fallback})
+				}
 			}
 		case "select":
+			log.Printf("provider events: select room=%q target=%q tokenProvided=%t", roomID, message.SessionID, message.Token != "")
 			s.selectSession(client, message.SessionID, message.Token)
 		}
 	}
 }
 
-func (s *Service) broadcastEvent(sessionID string, message any) {
+func (s *Service) broadcastEvent(roomID string, message any) {
 	s.mu.Lock()
+	s.eventSeq++
+	if event, ok := message.(map[string]any); ok {
+		event["sequence"] = s.eventSeq
+	}
 	clients := make([]struct {
 		conn   *websocket.Conn
 		client *eventClient
 	}, 0, len(s.events))
 	for conn, client := range s.events {
-		if client.sessionID == sessionID {
+		if client.roomID == roomID {
+			if client.initializing {
+				client.pending = append(client.pending, message)
+				continue
+			}
 			clients = append(clients, struct {
 				conn   *websocket.Conn
 				client *eventClient
@@ -156,6 +327,7 @@ func (s *Service) broadcastEvent(sessionID string, message any) {
 		}
 	}
 	s.mu.Unlock()
+	log.Printf("provider events: broadcast room=%q recipients=%d message=%T", roomID, len(clients), message)
 	for _, client := range clients {
 		client.client.writeMu.Lock()
 		_ = client.conn.WriteJSON(message)
@@ -164,20 +336,33 @@ func (s *Service) broadcastEvent(sessionID string, message any) {
 }
 
 func (s *Service) selectSession(client *eventClient, sessionID, token string) {
-	if !s.authorizeEventSession(client, sessionID, token) {
+	allowed := s.authorizeEventSession(client, sessionID, token)
+	log.Printf("provider events: select room=%q target=%q tokenProvided=%t allowed=%t", client.roomID, sessionID, token != "", allowed)
+	if !allowed {
 		return
 	}
-	s.broadcastEvent(client.sessionID, map[string]any{"type": "selected", "sessionId": sessionID})
+	s.mu.Lock()
+	s.activeRooms[client.roomID] = sessionID
+	s.lastActivity[sessionID] = time.Now()
+	s.mu.Unlock()
+	s.broadcastEvent(client.roomID, map[string]any{"type": "selected", "sessionId": sessionID})
 }
 
 func (s *Service) authorizeEventSession(client *eventClient, sessionID, token string) bool {
+	if session, ok := s.Session(sessionID); !ok || session.RoomID != client.roomID {
+		log.Printf("provider events: room=%q target=%q denied", client.roomID, sessionID)
+		return false
+	}
 	if _, ok := client.authorizedSessions[sessionID]; ok {
+		log.Printf("provider events: room=%q target=%q already authorized", client.roomID, sessionID)
 		return true
 	}
 	if !s.authorizeSessionToken(sessionID, token) {
+		log.Printf("provider events: room=%q target=%q token denied", client.roomID, sessionID)
 		return false
 	}
 	client.authorizedSessions[sessionID] = struct{}{}
+	log.Printf("provider events: room=%q target=%q scope authorized", client.roomID, sessionID)
 	return true
 }
 
@@ -187,6 +372,7 @@ type sharedAgent struct {
 	subscribers map[*sharedSubscription]struct{}
 	onOutput    func([]byte)
 	onEmpty     func()
+	closed      bool
 }
 
 // SharedAgent returns a terminal connection sharing the agent for sessionID.
@@ -304,15 +490,7 @@ func (s *sharedAgent) readLoop() {
 			}
 		}
 		if err != nil {
-			s.mu.Lock()
-			for subscriber := range s.subscribers {
-				close(subscriber.done)
-			}
-			s.subscribers = make(map[*sharedSubscription]struct{})
-			s.mu.Unlock()
-			if s.onEmpty != nil {
-				s.onEmpty()
-			}
+			s.shutdown(false)
 			return
 		}
 	}
@@ -321,19 +499,44 @@ func (s *sharedAgent) readLoop() {
 func (s *sharedAgent) removeSubscriber(subscriber *sharedSubscription) {
 	closeAgent := false
 	s.mu.Lock()
-	if _, ok := s.subscribers[subscriber]; ok {
-		delete(s.subscribers, subscriber)
-		close(subscriber.done)
-		closeAgent = len(s.subscribers) == 0
+	if !s.closed {
+		if _, ok := s.subscribers[subscriber]; ok {
+			delete(s.subscribers, subscriber)
+			close(subscriber.done)
+			closeAgent = len(s.subscribers) == 0
+		}
 	}
 	s.mu.Unlock()
 	if closeAgent {
-		if closer, ok := s.agent.(io.Closer); ok {
+		s.close()
+	}
+}
+
+func (s *sharedAgent) close() {
+	s.shutdown(true)
+}
+
+func (s *sharedAgent) shutdown(closeAgent bool) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	for subscriber := range s.subscribers {
+		close(subscriber.done)
+	}
+	s.subscribers = make(map[*sharedSubscription]struct{})
+	agent := s.agent
+	onEmpty := s.onEmpty
+	s.mu.Unlock()
+	if closeAgent {
+		if closer, ok := agent.(io.Closer); ok {
 			_ = closer.Close()
 		}
-		if s.onEmpty != nil {
-			s.onEmpty()
-		}
+	}
+	if onEmpty != nil {
+		onEmpty()
 	}
 }
 
@@ -387,6 +590,7 @@ func (s *Service) CreateSession(ctx context.Context, profileName string, request
 	s.sessions[session.ID] = session
 	s.output[session.ID] = ""
 	s.executeMu[session.ID] = &sync.Mutex{}
+	s.lastActivity[session.ID] = time.Now()
 	s.mu.Unlock()
 	return session, nil
 }
@@ -424,6 +628,7 @@ func (s *Service) AppendOutput(sessionID string, data []byte) {
 		return
 	}
 	s.output[sessionID] += string(data)
+	s.lastActivity[sessionID] = time.Now()
 	if len(s.output[sessionID]) > 256*1024 {
 		s.output[sessionID] = s.output[sessionID][len(s.output[sessionID])-256*1024:]
 	}
@@ -499,59 +704,15 @@ func (s *Service) Handler() http.Handler {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if r.Header.Get("X-Rterm-Handoff") == "1" {
-				handoff := newToken()
+			if roomID := r.URL.Query().Get("roomId"); roomID != "" {
 				s.mu.Lock()
-				s.handoffs[handoff] = sessionHandoff{
-					sessionID: session.ID,
-					token:     session.Token,
-					expiresAt: time.Now().Add(time.Minute),
-				}
+				created := s.sessions[session.ID]
+				created.RoomID = roomID
+				s.sessions[session.ID] = created
 				s.mu.Unlock()
-				session.Handoff = handoff
+				session.RoomID = roomID
 			}
 			writeJSON(w, http.StatusCreated, session)
-			return
-		}
-		if len(parts) == 3 && parts[0] == "sessions" && parts[2] == "handoff" && r.Method == http.MethodPost {
-			var request struct {
-				Handoff string `json:"handoff"`
-			}
-			if err := json.NewDecoder(io.LimitReader(r.Body, 8*1024)).Decode(&request); err != nil {
-				http.Error(w, "invalid handoff", http.StatusBadRequest)
-				return
-			}
-			s.mu.Lock()
-			handoff, ok := s.handoffs[request.Handoff]
-			if ok && handoff.sessionID == parts[1] && time.Now().Before(handoff.expiresAt) {
-				delete(s.handoffs, request.Handoff)
-			}
-			s.mu.Unlock()
-			if !ok || handoff.sessionID != parts[1] || !time.Now().Before(handoff.expiresAt) {
-				http.Error(w, "invalid handoff", http.StatusUnauthorized)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]string{"token": handoff.token})
-			return
-		}
-		if len(parts) == 3 && parts[0] == "sessions" && parts[2] == "share" && r.Method == http.MethodPost {
-			if !s.authorize(w, r, parts[1]) {
-				return
-			}
-			session, ok := s.Session(parts[1])
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
-			handoff := newToken()
-			s.mu.Lock()
-			s.handoffs[handoff] = sessionHandoff{
-				sessionID: session.ID,
-				token:     session.Token,
-				expiresAt: time.Now().Add(time.Minute),
-			}
-			s.mu.Unlock()
-			writeJSON(w, http.StatusOK, map[string]string{"handoff": handoff})
 			return
 		}
 		if len(parts) == 3 && parts[0] == "sessions" && parts[2] == "upload" && r.Method == http.MethodPost {

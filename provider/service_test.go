@@ -244,7 +244,7 @@ func TestSharedAgentFanoutAndOperations(t *testing.T) {
 	}
 }
 
-func TestHandlerRoutesAndHandoffs(t *testing.T) {
+func TestHandlerRoutes(t *testing.T) {
 	service, session := testService(t)
 	if recorder := request(service, http.MethodGet, "/api/providers", "", nil); recorder.Code != http.StatusOK {
 		t.Fatalf("providers status: %d", recorder.Code)
@@ -268,33 +268,12 @@ func TestHandlerRoutesAndHandoffs(t *testing.T) {
 	}
 	var createdSession Session
 	decodeBody(t, created, &createdSession)
-	req := httptest.NewRequest(http.MethodPost, "/api/providers/test/sessions", strings.NewReader(`{"target":"node-1","user":"root"}`))
-	req.Header.Set("X-Rterm-Handoff", "1")
-	recorder := httptest.NewRecorder()
-	service.Handler().ServeHTTP(recorder, req)
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("handoff create status: %d", recorder.Code)
-	}
-	decodeBody(t, recorder, &createdSession)
-	if createdSession.Handoff == "" {
-		t.Fatal("handoff missing")
-	}
-	handoff := request(service, http.MethodPost, "/api/sessions/"+createdSession.ID+"/handoff", "", strings.NewReader(`{"handoff":"`+createdSession.Handoff+`"}`))
-	if handoff.Code != http.StatusOK {
-		t.Fatalf("handoff status: %d", handoff.Code)
-	}
-	if reused := request(service, http.MethodPost, "/api/sessions/"+createdSession.ID+"/handoff", "", strings.NewReader(`{"handoff":"`+createdSession.Handoff+`"}`)); reused.Code != http.StatusUnauthorized {
-		t.Fatalf("reused handoff status: %d", reused.Code)
-	}
 	for _, test := range []struct {
 		method string
 		path   string
 		code   int
 	}{
-		{http.MethodPost, "/api/sessions/" + session.ID + "/handoff", http.StatusBadRequest},
-		{http.MethodPost, "/api/sessions/missing/handoff", http.StatusBadRequest},
 		{http.MethodGet, "/api/sessions/" + session.ID + "/read", http.StatusUnauthorized},
-		{http.MethodPost, "/api/sessions/" + session.ID + "/share", http.StatusUnauthorized},
 		{http.MethodPost, "/api/sessions/" + session.ID + "/execute", http.StatusUnauthorized},
 		{http.MethodPost, "/api/sessions/" + session.ID + "/upload", http.StatusUnauthorized},
 		{http.MethodGet, "/api/sessions/" + session.ID + "/download", http.StatusUnauthorized},
@@ -311,21 +290,12 @@ func TestHandlerRoutesAndHandoffs(t *testing.T) {
 	}
 }
 
-func TestHandlerReadShareExecuteAndTransfer(t *testing.T) {
+func TestHandlerReadExecuteAndTransfer(t *testing.T) {
 	service, session := testService(t)
 	service.AppendOutput(session.ID, []byte("line 1\nline 2"))
 	read := request(service, http.MethodGet, "/api/sessions/"+session.ID+"/read?maxLines=1", session.Token, nil)
 	if read.Code != http.StatusOK {
 		t.Fatalf("read status: %d", read.Code)
-	}
-	share := request(service, http.MethodPost, "/api/sessions/"+session.ID+"/share", session.Token, nil)
-	if share.Code != http.StatusOK {
-		t.Fatalf("share status: %d", share.Code)
-	}
-	var shareBody map[string]string
-	decodeBody(t, share, &shareBody)
-	if shareBody["handoff"] == "" {
-		t.Fatal("share handoff missing")
 	}
 	if execute := request(service, http.MethodPost, "/api/sessions/"+session.ID+"/execute", session.Token, strings.NewReader(`{"command":"echo hi"}`)); execute.Code != http.StatusConflict {
 		t.Fatalf("unattached execute status: %d", execute.Code)
@@ -463,11 +433,20 @@ func TestHandleEventsWebSocketAndSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.mu.Lock()
+	first := service.sessions[session.ID]
+	first.RoomID = "room-1"
+	service.sessions[session.ID] = first
+	other := service.sessions[otherSession.ID]
+	other.RoomID = "room-1"
+	service.sessions[otherSession.ID] = other
+	service.activeRooms["room-1"] = session.ID
+	service.mu.Unlock()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		service.HandleEventsWebSocket(&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}, w, r)
 	}))
 	defer server.Close()
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/?session=" + url.QueryEscape(session.ID) + "&token=" + url.QueryEscape(session.Token)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/?roomId=room-1&session=" + url.QueryEscape(session.ID)
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+session.Token)
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
@@ -476,8 +455,13 @@ func TestHandleEventsWebSocketAndSelection(t *testing.T) {
 	}
 	defer conn.Close()
 	var event map[string]any
+	for index := 0; index < 2; index++ {
+		if err := conn.ReadJSON(&event); err != nil || event["type"] != "new-session" {
+			t.Fatalf("initial session event %d: %#v %v", index, event, err)
+		}
+	}
 	if err := conn.ReadJSON(&event); err != nil || event["type"] != "selected" {
-		t.Fatalf("initial event: %#v %v", event, err)
+		t.Fatalf("initial selected event: %#v %v", event, err)
 	}
 	if err := conn.WriteJSON(map[string]string{"type": "new-session"}); err != nil {
 		t.Fatal(err)
@@ -485,7 +469,7 @@ func TestHandleEventsWebSocketAndSelection(t *testing.T) {
 	if err := conn.ReadJSON(&event); err != nil || event["type"] != "new-session" {
 		t.Fatalf("new event: %#v %v", event, err)
 	}
-	if err := conn.WriteJSON(map[string]string{"type": "select", "sessionId": session.ID}); err != nil {
+	if err := conn.WriteJSON(map[string]string{"type": "select", "sessionId": session.ID, "token": session.Token}); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.ReadJSON(&event); err != nil || event["type"] != "selected" {
@@ -502,8 +486,13 @@ func TestHandleEventsWebSocketAndSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unauthorizedConn.Close()
+	for index := 0; index < 2; index++ {
+		if err := unauthorizedConn.ReadJSON(&event); err != nil || event["type"] != "new-session" {
+			t.Fatalf("unauthorized connection initial session event %d: %#v %v", index, event, err)
+		}
+	}
 	if err := unauthorizedConn.ReadJSON(&event); err != nil || event["type"] != "selected" {
-		t.Fatalf("unauthorized connection initial event: %#v %v", event, err)
+		t.Fatalf("unauthorized connection initial selected event: %#v %v", event, err)
 	}
 	if err := unauthorizedConn.WriteJSON(map[string]string{"type": "close", "sessionId": otherSession.ID}); err != nil {
 		t.Fatal(err)
@@ -585,7 +574,7 @@ func TestSharedAgentReadVariantsAndReadLoopShutdown(t *testing.T) {
 
 func TestServiceDirectErrorBranches(t *testing.T) {
 	service, session := testService(t)
-	service.selectSession(&eventClient{sessionID: session.ID, authorizedSessions: map[string]struct{}{session.ID: {}}}, "missing", "")
+	service.selectSession(&eventClient{roomID: "room", authorizedSessions: map[string]struct{}{session.ID: {}}}, "missing", "")
 	if got := service.outputSince(session.ID, 999999); got != service.output[session.ID] {
 		t.Fatal("outputSince did not handle an oversized offset")
 	}
@@ -615,16 +604,6 @@ func TestServiceDirectErrorBranches(t *testing.T) {
 		t.Fatalf("unresolved transfer status: %d", badArgs.Code)
 	}
 
-	invalidHandoff := request(service, http.MethodPost, "/api/sessions/"+session.ID+"/handoff", "", strings.NewReader(`{"handoff":"bad"}`))
-	if invalidHandoff.Code != http.StatusUnauthorized {
-		t.Fatalf("invalid handoff status: %d", invalidHandoff.Code)
-	}
-	expired := newToken()
-	service.handoffs[expired] = sessionHandoff{sessionID: session.ID, token: session.Token, expiresAt: time.Now().Add(-time.Second)}
-	expiredHandoff := request(service, http.MethodPost, "/api/sessions/"+session.ID+"/handoff", "", strings.NewReader(`{"handoff":"`+expired+`"}`))
-	if expiredHandoff.Code != http.StatusUnauthorized {
-		t.Fatalf("expired handoff status: %d", expiredHandoff.Code)
-	}
 }
 
 func TestHandlerDiscoveryAndSessionErrors(t *testing.T) {
@@ -647,7 +626,7 @@ func TestHandlerDiscoveryAndSessionErrors(t *testing.T) {
 func TestEventsUpgradeFailure(t *testing.T) {
 	service, session := testService(t)
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/?session="+session.ID, nil)
+	request := httptest.NewRequest(http.MethodGet, "/?roomId=room-1", nil)
 	request.Header.Set("Authorization", "Bearer "+session.Token)
 	service.HandleEventsWebSocket(&websocket.Upgrader{}, response, request)
 	if response.Code != http.StatusBadRequest {
