@@ -1,3 +1,15 @@
+# Release 0.9.0
+
+## Major Features and Improvements
+
+- Add shared provider sessions with synchronized creation, selection, and closure across embedded pages in the same room.
+- Improve provider session authorization and lifecycle cleanup.
+- Harden embedded parent messaging with exact origin validation.
+
+## Breaking Changes
+
+- Replace the embedded one-time credential handoff flow with room-based provider session sharing.
+
 # Release 0.8.0
 
 ## Major Features and Improvements
