@@ -12,62 +12,64 @@ Inspired by [GoTTY](https://github.com/yudai/gotty)
     <img src="docs/rterm.gif">
 </p>
 
-
 ## Installation
 
 1. Import as package to existing project.
-    ```bash
-    go get github.com/dev6699/rterm
-    ```
 
-    ```go
-    import (
-        "github.com/dev6699/rterm"
-        "github.com/dev6699/rterm/command"
-    )
+   ```bash
+   go get github.com/dev6699/rterm
+   ```
 
-    func main() {
-        rterm.SetPrefix("/")
-        mux := http.NewServeMux()
+   ```go
+   import (
+       "github.com/dev6699/rterm"
+       "github.com/dev6699/rterm/command"
+   )
 
-        rterm.Register(
-            mux,
-            rterm.Command{
-                Name:        "bash",
-                Description: "Bash (Unix shell)",
-                Writable:    true,
-                AuthCheck:   auth.NewBasic("123456"),
-            },
-        )
+   func main() {
+       rterm.SetPrefix("/")
+       mux := http.NewServeMux()
 
-        addr := ":5000"
-        server := &http.Server{
-            Addr:    addr,
-            Handler: mux,
-        }
-        server.ListenAndServe()
-    }
-    ```
-    Please check [example](cmd/rterm/main.go) for more information.
+       rterm.Register(
+           mux,
+           rterm.Command{
+               Name:        "bash",
+               Description: "Bash (Unix shell)",
+               Writable:    true,
+               AuthCheck:   auth.NewBasic("123456"),
+           },
+       )
+
+       addr := ":5000"
+       server := &http.Server{
+           Addr:    addr,
+           Handler: mux,
+       }
+       server.ListenAndServe()
+   }
+   ```
+
+   Please check [example](cmd/rterm/main.go) for more information.
 
     <img src="docs/index.png" width="45%">
     <img src="docs/auth.png" width="45%">
 
 2. Prebuilt binary.
 
-    - Grab the latest binary from the [releases](https://github.com/dev6699/rterm/releases) page.
+   - Grab the latest binary from the [releases](https://github.com/dev6699/rterm/releases) page.
 
 3. From sources:
-    ```bash
-    # Clone the Repository
-    git clone https://github.com/dev6699/rterm.git
-    cd rterm
+   ```bash
+   # Clone the Repository
+   git clone https://github.com/dev6699/rterm.git
+   cd rterm
 
-    # Build
-    make build
-    ```
+   # Build
+   make build
+   ```
 
 ## Usage
+
 1. Start the binary `./rterm`.
 2. Open web browser and navigate to `http://<remote_ip>:5000`.
 3. Get control of your terminal!
@@ -110,13 +112,15 @@ session-scoped token needed by the trusted embedding host:
   "type": "sessions-response",
   "requestId": "call-1",
   "ok": true,
-  "result": [{
-    "sessionId": "session-id",
-    "token": "session-token",
-    "provider": "ssh",
-    "target": "node-1",
-    "user": "ubuntu"
-  }]
+  "result": [
+    {
+      "sessionId": "session-id",
+      "token": "session-token",
+      "provider": "ssh",
+      "target": "node-1",
+      "user": "ubuntu"
+    }
+  ]
 }
 ```
 
@@ -155,9 +159,7 @@ The discovery command may print a raw JSON array. `targetPath` and optional
 `labelPath` map fields from each array item into rterm targets:
 
 ```json
-[
-  {"hostname":"node-1","label":"Node 1"}
-]
+[{ "hostname": "node-1", "label": "Node 1" }]
 ```
 
 The profile's `users` list is the predefined list of OS users offered for
@@ -180,11 +182,11 @@ Creating a session returns its metadata and a random, session-scoped token:
 
 ```json
 {
-  "id":"session-id",
-  "token":"session-token",
-  "provider":"ssh",
-  "target":"node-1",
-  "user":"ubuntu"
+  "id": "session-id",
+  "token": "session-token",
+  "provider": "ssh",
+  "target": "node-1",
+  "user": "ubuntu"
 }
 ```
 
@@ -270,4 +272,5 @@ folder and appends the source filename. A destination with an extension is a
 rename and must use the same extension as the source file.
 
 ## License
+
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

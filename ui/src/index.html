@@ -1,561 +1,85 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RTerm</title>
     <link rel="stylesheet" href="__RTERM_PREFIX__/xterm.css" />
     <script src="__RTERM_PREFIX__/xterm.js"></script>
     <script src="__RTERM_PREFIX__/addon-fit.js"></script>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-        }
+    <link rel="stylesheet" href="__RTERM_PREFIX__/style.css" />
+  </head>
 
-        html,
-        body {
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-        }
-
-        html.provider-page,
-        html.provider-page body {
-            min-height: 100%;
-            height: auto;
-            overflow-x: hidden;
-            overflow-y: auto;
-        }
-
-        html.provider-page body {
-            background: #111;
-        }
-
-        html.provider-page body.terminal-active {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            overflow: hidden;
-            background: #000;
-        }
-
-        html.provider-page.terminal-active {
-            height: 100%;
-            overflow: hidden;
-        }
-
-        html.provider-page body.terminal-active #terminal {
-            min-height: 100vh;
-        }
-
-        html.provider-page body.terminal-active #terminal {
-            flex: 1 1 auto;
-            min-height: 0;
-            height: auto;
-            overflow: hidden;
-        }
-
-        .provider-page:not(.terminal-active) #transfer-toggle,
-        .provider-page:not(.terminal-active) #transfer-panel {
-            display: none !important;
-        }
-
-        #terminal,
-        #auth {
-            color: white;
-            background: black;
-            height: 100%;
-        }
-
-        #terminal .provider-terminal {
-            width: 100%;
-            height: 100%;
-            min-height: 0;
-        }
-
-        #session-tabs {
-            display: none;
-            align-items: center;
-            gap: 2px;
-            min-height: 34px;
-            padding: 4px 6px 0;
-            overflow-x: auto;
-            background: #111;
-            border-bottom: 1px solid #333;
-        }
-
-        #session-tabs .session-tab,
-        #session-tabs #new-session {
-            flex: 0 0 auto;
-            min-height: 30px;
-            max-width: 320px;
-            overflow: hidden;
-            padding: 5px 10px;
-            border: 1px solid #333;
-            border-bottom: 0;
-            border-radius: 7px 7px 0 0;
-            color: #bbb;
-            background: #1a1a1a;
-            cursor: pointer;
-            font: inherit;
-            font-size: 12px;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
-        #session-tabs .session-tab {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            cursor: default;
-        }
-
-        #session-tabs .session-tab-select,
-        #session-tabs .session-tab-close {
-            border: 0;
-            padding: 0;
-            color: inherit;
-            background: transparent;
-            cursor: pointer;
-            font: inherit;
-        }
-
-        #session-tabs .session-tab-close {
-            padding: 0 2px;
-            color: #999;
-            font-size: 14px;
-            line-height: 1;
-        }
-
-        #session-tabs .session-tab-close:hover,
-        #session-tabs .session-tab-close:focus-visible {
-            color: white;
-        }
-
-        #session-tabs .session-tab.active {
-            color: white;
-            background: #252525;
-            border-color: #666;
-            box-shadow: inset 0 2px 0 #4f8cff;
-        }
-
-        #session-tabs #new-session.active {
-            color: white !important;
-            border-color: #666 !important;
-            background: #252525 !important;
-            box-shadow: inset 0 2px 0 #4f8cff;
-        }
-
-        #new-session {
-            margin-left: 0;
-            border: 1px dashed #555 !important;
-            color: #ddd !important;
-            background: transparent !important;
-        }
-
-        .embedded .xterm {
-            font-size: 11px;
-            line-height: 1.1;
-        }
-
-        .xterm-viewport {
-            overflow-y: auto !important;
-        }
-
-        .embedded * {
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255, 255, 255, 0.5333) transparent;
-        }
-
-        .embedded *::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-            background: transparent;
-        }
-
-        .embedded *::-webkit-scrollbar-button,
-        .embedded *::-webkit-scrollbar-corner {
-            display: none;
-            background: transparent;
-        }
-
-        .embedded *::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        .embedded *::-webkit-scrollbar-thumb {
-            border-radius: 999px;
-            background: rgba(255, 255, 255, 0.5333);
-        }
-
-        #auth {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .digit-input {
-            width: 30px;
-            height: 40px;
-            font-size: 1.5em;
-            text-align: center;
-            margin: 5px;
-        }
-
-        input::-webkit-outer-spin-button,
-        input::-webkit-inner-spin-button {
-            -webkit-appearance: none;
-            margin: 0;
-        }
-
-        #result {
-            color: red;
-        }
-
-        #provider-select {
-            display: none;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            background: #111;
-            min-height: 100vh;
-            padding: 24px;
-            box-sizing: border-box;
-        }
-
-        .provider-page #provider-select {
-            align-items: flex-start;
-        }
-
-        .embedded #provider-select {
-            padding: 10px;
-        }
-
-        .embedded .provider-card {
-            width: min(100%, 360px);
-            gap: 4px;
-            padding: 8px;
-            border-radius: 8px;
-        }
-
-        .embedded .provider-card h1 {
-            margin-bottom: 0;
-            font-size: 0.9rem;
-        }
-
-        .embedded .provider-field {
-            gap: 1px;
-            font-size: 11px;
-        }
-
-        .embedded .provider-row {
-            gap: 6px;
-        }
-
-        .embedded .provider-field input,
-        .embedded .provider-field select,
-        .embedded #connect-provider {
-            min-height: 26px;
-            padding: 3px 6px;
-            font-size: 11px;
-        }
-
-        .embedded #provider-error {
-            min-height: 1em;
-            font-size: 11px;
-        }
-
-        .embedded #connect-provider {
-            margin-top: 1px;
-        }
-
-        .provider-card {
-            width: min(100%, 520px);
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-            padding: 28px;
-            box-sizing: border-box;
-            border: 1px solid #333;
-            border-radius: 12px;
-            background: #181818;
-            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
-        }
-
-        .provider-card h1 {
-            margin-bottom: 4px;
-            font-size: 1.35rem;
-        }
-
-        .provider-field {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .provider-row {
-            display: flex;
-            gap: 8px;
-        }
-
-        .provider-row .provider-field {
-            flex: 1 1 0;
-            min-width: 0;
-        }
-
-        .provider-field input,
-        .provider-field select,
-        #connect-provider {
-            min-height: 38px;
-            padding: 8px 10px;
-            box-sizing: border-box;
-            border: 1px solid #444;
-            border-radius: 6px;
-            color: white;
-            background: #0d0d0d;
-            font: inherit;
-        }
-
-        #connect-provider {
-            margin-top: 4px;
-            border-color: #4f8cff;
-            background: #2563eb;
-            cursor: pointer;
-        }
-
-        #connect-provider:disabled {
-            opacity: 0.55;
-            cursor: wait;
-        }
-
-        #provider-error {
-            color: #ff8b8b;
-        }
-
-        #transfer-panel {
-            display: none;
-            position: fixed;
-            top: 14px;
-            right: 14px;
-            z-index: 10;
-            width: min(320px, calc(100% - 28px));
-            padding: 14px;
-            box-sizing: border-box;
-            color: white;
-            background: rgba(24, 24, 24, 0.96);
-            border: 1px solid #444;
-            border-radius: 8px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-        }
-
-        #transfer-toggle {
-            display: none;
-            position: fixed;
-            top: 14px;
-            right: 14px;
-            z-index: 9;
-            min-height: 34px;
-            width: 34px;
-            padding: 7px;
-            border: 1px solid #444;
-            border-radius: 6px;
-            color: white;
-            background: rgba(24, 24, 24, 0.96);
-            cursor: pointer;
-        }
-
-        .transfer-section {
-            display: flex;
-            flex-direction: column;
-            gap: 7px;
-        }
-
-        .transfer-section + .transfer-section {
-            margin-top: 14px;
-            padding-top: 14px;
-            border-top: 1px solid #333;
-        }
-
-        .transfer-section input,
-        .transfer-section button {
-            min-height: 32px;
-            padding: 6px 8px;
-            box-sizing: border-box;
-            border: 1px solid #444;
-            border-radius: 5px;
-            color: white;
-            background: #0d0d0d;
-            font: inherit;
-        }
-
-        .transfer-section button {
-            border-color: #4f8cff;
-            background: #2563eb;
-            cursor: pointer;
-        }
-
-        .transfer-section button:disabled {
-            opacity: 0.55;
-            cursor: wait;
-        }
-
-        #transfer-close {
-            float: right;
-            border: 0;
-            color: #aaa;
-            background: transparent;
-            font-size: 1.1rem;
-            cursor: pointer;
-        }
-
-        #transfer-status {
-            margin-top: 10px;
-            color: #aaa;
-        }
-
-        .embedded #transfer-panel {
-            top: 36px;
-            right: 8px;
-            width: min(230px, calc(100% - 16px));
-            padding: 8px;
-            border-radius: 6px;
-            font-size: 12px;
-        }
-
-        .embedded .transfer-section {
-            gap: 4px;
-        }
-
-        .embedded .transfer-section + .transfer-section {
-            margin-top: 8px;
-            padding-top: 8px;
-        }
-
-        .embedded .transfer-section input,
-        .embedded .transfer-section button {
-            min-height: 27px;
-            padding: 4px 6px;
-            font-size: 12px;
-        }
-
-        .embedded #transfer-status {
-            margin-top: 6px;
-            line-height: 1.2;
-        }
-
-        .provider-page.terminal-active #transfer-toggle {
-            top: 36px;
-            right: 8px;
-            width: 28px;
-            min-height: 28px;
-            padding: 5px;
-        }
-
-        .provider-page.terminal-active #transfer-panel {
-            top: 36px;
-            right: 8px;
-        }
-
-        .embedded #session-tabs {
-            min-height: 26px;
-            gap: 2px;
-            padding: 2px 4px 0;
-            overflow-x: auto;
-            scrollbar-width: thin;
-        }
-
-        .embedded #session-tabs .session-tab,
-        .embedded #session-tabs #new-session {
-            min-height: 24px;
-            max-width: 150px;
-            padding: 3px 6px;
-            font-size: 10px;
-        }
-
-        .embedded #session-tabs .session-tab-close {
-            font-size: 12px;
-        }
-
-        html.provider-page body.embedded.terminal-active #terminal {
-            flex: 1 1 auto;
-            min-height: 0;
-            height: auto;
-            overflow: hidden;
-        }
-
-        html.provider-page body.embedded.terminal-active #terminal .provider-terminal,
-        html.provider-page body.embedded.terminal-active #terminal .xterm,
-        html.provider-page body.embedded.terminal-active #terminal .xterm-viewport {
-            min-height: 0;
-            height: 100%;
-        }
-    </style>
-</head>
-
-<body>
+  <body>
     <div id="session-tabs"><button id="new-session" type="button">+ New session</button></div>
     <div id="auth">
-        <h1>Enter 6-Digit Code</h1>
-        <div>
-            <input type="number" id="digit1" class="digit-input" maxlength="1" oninput="moveFocus(1)"
-                autocomplete="off">
-            <input type="number" id="digit2" class="digit-input" maxlength="1" oninput="moveFocus(2)"
-                autocomplete="off">
-            <input type="number" id="digit3" class="digit-input" maxlength="1" oninput="moveFocus(3)"
-                autocomplete="off">
-            <input type="number" id="digit4" class="digit-input" maxlength="1" oninput="moveFocus(4)"
-                autocomplete="off">
-            <input type="number" id="digit5" class="digit-input" maxlength="1" oninput="moveFocus(5)"
-                autocomplete="off">
-            <input type="number" id="digit6" class="digit-input" maxlength="1" oninput="moveFocus(6)"
-                autocomplete="off">
-        </div>
-        <div id="result"></div>
+      <h1>Enter 6-Digit Code</h1>
+      <div>
+        <input type="number" id="digit1" class="digit-input" maxlength="1" autocomplete="off" />
+        <input type="number" id="digit2" class="digit-input" maxlength="1" autocomplete="off" />
+        <input type="number" id="digit3" class="digit-input" maxlength="1" autocomplete="off" />
+        <input type="number" id="digit4" class="digit-input" maxlength="1" autocomplete="off" />
+        <input type="number" id="digit5" class="digit-input" maxlength="1" autocomplete="off" />
+        <input type="number" id="digit6" class="digit-input" maxlength="1" autocomplete="off" />
+      </div>
+      <div id="result"></div>
     </div>
     <div id="provider-select">
-        <div class="provider-card">
-            <div class="provider-row">
-                <label class="provider-field">
-                    <span>Target</span>
-                    <select id="target-select"></select>
-                </label>
-                <label class="provider-field">
-                    <span>User</span>
-                    <select id="user-select"></select>
-                </label>
-            </div>
-            <div id="provider-error"></div>
-            <button id="connect-provider" type="button">Connect</button>
+      <div class="provider-card">
+        <div class="provider-row">
+          <label class="provider-field">
+            <span>Target</span>
+            <select id="target-select"></select>
+          </label>
+          <label class="provider-field">
+            <span>User</span>
+            <select id="user-select"></select>
+          </label>
         </div>
+        <div id="provider-error"></div>
+        <button id="connect-provider" type="button">Connect</button>
+      </div>
     </div>
-    <button id="transfer-toggle" type="button" aria-label="File transfers" title="File transfers" aria-expanded="false">
-        <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M7 3v12"></path>
-            <path d="m3 11 4 4 4-4"></path>
-            <path d="M17 21V9"></path>
-            <path d="m13 13 4-4 4 4"></path>
-        </svg>
+    <button
+      id="transfer-toggle"
+      type="button"
+      aria-label="File transfers"
+      title="File transfers"
+      aria-expanded="false"
+    >
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        width="18"
+        height="18"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M7 3v12"></path>
+        <path d="m3 11 4 4 4-4"></path>
+        <path d="M17 21V9"></path>
+        <path d="m13 13 4-4 4 4"></path>
+      </svg>
     </button>
     <div id="transfer-panel">
-        <button id="transfer-close" type="button" aria-label="Close transfers">×</button>
-        <div class="transfer-section">
-            <strong>Upload file</strong>
-            <input id="upload-file" type="file">
-            <input id="upload-path" type="text" placeholder="Remote destination path or folder">
-            <button id="upload-button" type="button">Upload</button>
-        </div>
-        <div class="transfer-section">
-            <strong>Download file</strong>
-            <input id="download-path" type="text" placeholder="Remote source path">
-            <button id="download-button" type="button">Download</button>
-        </div>
-        <div id="transfer-status" role="status" aria-live="polite"></div>
+      <button id="transfer-close" type="button" aria-label="Close transfers">×</button>
+      <div class="transfer-section">
+        <strong>Upload file</strong>
+        <input id="upload-file" type="file" />
+        <input id="upload-path" type="text" placeholder="Remote destination path or folder" />
+        <button id="upload-button" type="button">Upload</button>
+      </div>
+      <div class="transfer-section">
+        <strong>Download file</strong>
+        <input id="download-path" type="text" placeholder="Remote source path" />
+        <button id="download-button" type="button">Download</button>
+      </div>
+      <div id="transfer-status" role="status" aria-live="polite"></div>
     </div>
     <div id="terminal"></div>
-    <script src="__RTERM_PREFIX__/script.js"></script>
-</body>
-
+    <script type="module" src="__RTERM_PREFIX__/script.js"></script>
+  </body>
 </html>

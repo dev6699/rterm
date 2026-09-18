@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:ui": "node --test ui/test/*.test.js",
+    "test:ui:coverage": "node --test --experimental-test-coverage --test-coverage-include=ui/src/*.js --test-coverage-lines=95 ui/test/*.test.js"
+  }
+}

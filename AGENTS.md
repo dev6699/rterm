@@ -8,7 +8,12 @@ This repository is a Go 1.22 module (`github.com/dev6699/rterm`) for a web-based
 - `auth/`, `command/`: authentication and command definitions.
 - `server/`: HTTP and WebSocket transport.
 - `tty/`: terminal process, controller, agent, and message handling.
-- `ui/` and `ui/src/`: embedded web UI and xterm.js assets.
+- `ui/` and `ui/src/`: embedded web UI and xterm.js assets. The UI entrypoint is
+  `ui/src/script.js`, which imports responsibility-focused modules for state,
+  protocol/bridge handling, terminal lifecycle, sessions, sockets, providers,
+  authentication, and transfers. Page styling lives in `ui/src/style.css`.
+- `ui/test/`: Node-based UI unit tests, shared browser/WebSocket fakes, and
+  entrypoint smoke coverage.
 - `cmd/rterm/`: main server binary; `cmd/totp/`: TOTP utility.
 - `docs/`: screenshots and demo media.
 
@@ -16,15 +21,17 @@ Keep package-specific code in its existing directory and update `README.md` when
 
 ## Build, Test, and Development Commands
 
-Run the server locally with `make run` (or `go run cmd/rterm/main.go`). Build the distributable binary with `make build`; this uses `CGO_ENABLED=0` and writes `./rterm`. Run the TOTP utility with `make totp`. Before submitting changes, use `go test ./...`, `go vet ./...`, and `gofmt -w` on changed Go files. The repository currently has no committed test files, so tests should be added for new behavior where practical.
+Run the server locally with `make run` (or `go run cmd/rterm/main.go`). Build the distributable binary with `make build`; this uses `CGO_ENABLED=0` and writes `./rterm`. Run the TOTP utility with `make totp`. Run the UI tests with `npm run test:ui` or `npm run test:ui:coverage`. Before submitting changes, use `go test ./...`, `go vet ./...`, and `gofmt -w` on changed Go files. UI changes should include focused tests under `ui/test/` and preserve the coverage check.
 
 ## Coding Style & Naming Conventions
 
-Use standard Go formatting and idioms: tabs are produced by `gofmt`, exported identifiers use GoDoc comments, and names are concise `MixedCaps` rather than underscores. Keep JavaScript and CSS changes consistent with the existing `ui/src` style, and avoid modifying vendored or generated-looking assets unless the change requires it.
+Use standard Go formatting and idioms: tabs are produced by `gofmt`, exported identifiers use GoDoc comments, and names are concise `MixedCaps` rather than underscores. Keep JavaScript and CSS changes consistent with the existing `ui/src` style. Use native ES modules for browser code; keep `script.js` as the stable entrypoint and add new responsibilities as imported modules rather than rebuilding one large file. Keep page CSS in external files under `ui/src/`, referenced with the configured asset prefix. Avoid modifying vendored or generated-looking assets unless the change requires it.
 
 ## Testing Guidelines
 
 Place Go tests beside the implementation in `*_test.go` files and name cases descriptively, such as `TestRegisterRejectsUnauthorizedEmbed`. Run the full suite with `go test ./...`; use focused package or test runs while iterating, then rerun the full suite before review.
+
+For UI changes, organize tests by responsibility (`auth.test.js`, `terminal.test.js`, `sessions.test.js`, `sockets.test.js`, and so on). Keep shared DOM/WebSocket fakes in `ui/test/` helpers. Run both `npm run test:ui` and `npm run test:ui:coverage`. Node tests validate module behavior and entrypoint wiring, but do not replace browser/Electron visual smoke testing when that runtime is available.
 
 ## Commit & Pull Request Guidelines
 

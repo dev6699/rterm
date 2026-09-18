@@ -42,9 +42,16 @@ func TestCommandPageUsesConfiguredAssetPrefix(t *testing.T) {
 	if recording.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recording.Code, http.StatusOK)
 	}
-	for _, asset := range []string{"/rterm/xterm.css", "/rterm/xterm.js", "/rterm/addon-fit.js", "/rterm/script.js"} {
+	for _, asset := range []string{"/rterm/xterm.css", "/rterm/style.css", "/rterm/xterm.js", "/rterm/addon-fit.js", "/rterm/script.js"} {
 		if !strings.Contains(body, asset) {
 			t.Errorf("page does not contain prefixed asset %q", asset)
+		}
+	}
+	for _, asset := range []string{"state.js", "protocol.js", "bridge.js", "terminal.js", "auth.js", "transfers.js", "sessions.js", "sockets.js", "provider.js"} {
+		assetRecording := httptest.NewRecorder()
+		mux.ServeHTTP(assetRecording, httptest.NewRequest(http.MethodGet, "/rterm/"+asset, nil))
+		if assetRecording.Code != http.StatusOK {
+			t.Errorf("asset %q returned status %d", asset, assetRecording.Code)
 		}
 	}
 	if strings.Contains(body, "__RTERM_PREFIX__") {
